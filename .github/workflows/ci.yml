@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev zlib1g-dev libluajit-5.1-dev pkg-config
+      - name: Toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal -c clippy -c rustfmt && rustup default 1.88.0
+      - run: cargo fmt --check
+      - run: cargo clippy --release --locked -- -D warnings
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
