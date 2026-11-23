@@ -1,0 +1,50 @@
+# Probe: can Rust target x86_64-pc-cygwin on a GitHub Windows runner, next to the C winws2
+# built the upstream way? (temporary, windivert branch)
+name: winprobe
+on:
+  push:
+    branches: [windivert]
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: rs }
+      - name: Cygwin (upstream snapshot)
+        uses: cygwin/cygwin-install-action@v4
+        with:
+          platform: x86_64
+          site: http://ctm.crouchingtigerhiddenfruitbat.org/pub/cygwin/circa/64bit/2024/01/30/231215
+          check-sig: 'false'
+          packages: gcc-core make zlib-devel wget patch pkg-config
+      - name: LuaJIT (upstream recipe)
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          export MAKEFLAGS=-j$(nproc) &&
+          wget -q https://github.com/openresty/luajit2/archive/refs/tags/v2.1-20250826.tar.gz &&
+          tar -xzf v2.1-20250826.tar.gz &&
+          make -C luajit2-2.1-20250826 BUILDMODE=static XCFLAGS="-DLUAJIT_USE_SYSMALLOC -DLUAJIT_DISABLE_FFI -ffat-lto-objects" TARGET_CFLAGS="-Os -flto=auto -ffunction-sections -fdata-sections" TARGET_LDFLAGS="-Wl,--gc-sections -flto=auto" &&
+          make -C luajit2-2.1-20250826 install
+      - name: C winws2 (zapret2 31b2450 + nfqws2-keenetic fastpath patch)
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          export MAKEFLAGS=-j$(nproc) &&
+          wget -qO z.tgz https://codeload.github.com/bol-van/zapret2/tar.gz/31b245059d18a4ef939b87ef7de7588ebf490ed3 &&
+          mkdir z && tar -xzf z.tgz -C z --strip-components=1 &&
+          wget -qO fp.patch https://raw.githubusercontent.com/nfqws/nfqws2-keenetic/master/patches/001-tls-reasm-fastpath.patch &&
+          patch -p1 -d z < fp.patch &&
+          make -C z/nfq2 cygwin &&
+          ls -la z/nfq2/winws2.exe && cp /usr/bin/cygwin1.dll z/nfq2/ &&
+          (cd z/nfq2 && ./winws2.exe --version; ./winws2.exe --dry-run --wf-tcp=443 --debug=1 | tail -5) || true
+      - name: Rust x86_64-pc-cygwin hello
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal -c rust-src
+          cargo +1.100.0 new hello
+          cd hello
+          Add-Content src/main.rs 'extern "C" { fn luaL_newstate() -> *mut u8; }'
+          $env:RUSTC_BOOTSTRAP = "1"
+          $env:CARGO_TARGET_X86_64_PC_CYGWIN_LINKER = "C:\cygwin\bin\gcc.exe"
+          cargo +1.100.0 build --release --target x86_64-pc-cygwin -Zbuild-std=std,panic_abort 2>&1 | Select-Object -Last 25
+          Get-ChildItem target\x86_64-pc-cygwin\release\*.exe
+          C:\cygwin\bin\bash.exe -lc "cd '$(Get-Location)'; ./target/x86_64-pc-cygwin/release/hello.exe"
