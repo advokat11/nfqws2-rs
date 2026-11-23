@@ -35,7 +35,7 @@ jobs:
           patch -p1 -d z < fp.patch &&
           make -C z/nfq2 cygwin &&
           ls -la z/nfq2/winws2.exe && cp /usr/bin/cygwin1.dll z/nfq2/ &&
-          (cd z/nfq2 && ./winws2.exe --version; ./winws2.exe --dry-run --wf-tcp=443 --debug=1 | tail -5) || true
+          (cd z/nfq2 && ./winws2.exe --version; ./winws2.exe --dry-run --wf-tcp-out=443 --debug=1 2>&1 | tail -5; ./winws2.exe --wf-tcp-out=443 --wf-save=f.txt; cat f.txt; echo) || true
       - name: Rust x86_64-pc-cygwin hello
         shell: pwsh
         run: |
@@ -45,6 +45,6 @@ jobs:
           Add-Content src/main.rs 'extern "C" { fn luaL_newstate() -> *mut u8; }'
           $env:RUSTC_BOOTSTRAP = "1"
           $env:CARGO_TARGET_X86_64_PC_CYGWIN_LINKER = "C:\cygwin\bin\gcc.exe"
-          cargo +1.100.0 build --release --target x86_64-pc-cygwin -Zbuild-std=std,panic_abort 2>&1 | Select-Object -Last 25
+          cargo +1.100.0 build --release --target x86_64-pc-cygwin '-Zbuild-std=std,panic_abort' 2>&1 | Select-Object -Last 25
           Get-ChildItem target\x86_64-pc-cygwin\release\*.exe
           C:\cygwin\bin\bash.exe -lc "cd '$(Get-Location)'; ./target/x86_64-pc-cygwin/release/hello.exe"
