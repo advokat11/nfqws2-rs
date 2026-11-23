@@ -21,10 +21,21 @@ mod protocol;
 mod sec;
 mod sys;
 mod timer;
+mod wf;
 
 mod lua;
 mod nfqws;
+#[cfg(target_os = "cygwin")]
+mod win;
+#[cfg(target_os = "linux")]
 mod wlan;
+/// No per-interface SSIDs outside Linux (HAS_FILTER_SSID is Linux-only in the C code).
+#[cfg(not(target_os = "linux"))]
+mod wlan {
+    pub fn ssid_search_ifname(_ifname: &str) -> Option<String> {
+        None
+    }
+}
 
 fn main() {
     let r = nfqws::main();

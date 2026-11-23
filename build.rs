@@ -1,9 +1,13 @@
 fn main() {
-    // Same system libraries as the C original (ADR-007/009).
-    println!("cargo:rustc-link-lib=netfilter_queue");
-    println!("cargo:rustc-link-lib=nfnetlink");
-    // libnetfilter_queue uses libmnl; a static link needs it named (the C Makefile has -lmnl)
-    println!("cargo:rustc-link-lib=mnl");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let linux = target_os == "linux";
+    if linux {
+        // Same system libraries as the C original (ADR-007/009).
+        println!("cargo:rustc-link-lib=netfilter_queue");
+        println!("cargo:rustc-link-lib=nfnetlink");
+        // libnetfilter_queue uses libmnl; a static link needs it named (the C Makefile has -lmnl)
+        println!("cargo:rustc-link-lib=mnl");
+    }
     let now = std::process::Command::new("date")
         .arg("+%b %e %Y %H:%M:%S")
         .output()
@@ -53,8 +57,10 @@ fn main() {
         ljv
     };
     println!("cargo:rustc-env=NFQWS2_LUAJIT_VERSION={ljv}");
-    seccomp_tables();
-    socket_consts();
+    if linux {
+        seccomp_tables();
+        socket_consts();
+    }
     println!("cargo:rerun-if-changed=build.rs");
 }
 

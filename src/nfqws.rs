@@ -1152,14 +1152,17 @@ const OPTS: &[OptDef] = &[
         name: c"comment",
         has_arg: OPT,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"qnum",
         has_arg: REQ,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"bind-fix4",
         has_arg: NO,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"bind-fix6",
         has_arg: NO,
@@ -1176,10 +1179,12 @@ const OPTS: &[OptDef] = &[
         name: c"pidfile",
         has_arg: REQ,
     },
+    #[cfg(not(target_os = "cygwin"))]
     OptDef {
         name: c"user",
         has_arg: REQ,
     },
+    #[cfg(not(target_os = "cygwin"))]
     OptDef {
         name: c"uid",
         has_arg: REQ,
@@ -1216,6 +1221,7 @@ const OPTS: &[OptDef] = &[
         name: c"reasm-disable",
         has_arg: OPT,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"fwmark",
         has_arg: REQ,
@@ -1340,14 +1346,17 @@ const OPTS: &[OptDef] = &[
         name: c"filter-l7",
         has_arg: REQ,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"filter-ssid",
         has_arg: REQ,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"filter-ssid-neg",
         has_arg: OPT,
     },
+    #[cfg(target_os = "linux")]
     OptDef {
         name: c"filter-mark",
         has_arg: REQ,
@@ -1383,6 +1392,126 @@ const OPTS: &[OptDef] = &[
     OptDef {
         name: c"lua-desync",
         has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-iface",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-l3",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-tcp-in",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-tcp-out",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-udp-in",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-udp-out",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-tcp-empty",
+        has_arg: OPT,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-icmp-in",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-icmp-out",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-ipp-in",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-ipp-out",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-raw",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-raw-part",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-raw-filter",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-filter-lan",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-filter-loopback",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-priority",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-save",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"wf-dup-check",
+        has_arg: OPT,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"ssid-filter",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"ssid-filter-neg",
+        has_arg: OPT,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"nlm-filter",
+        has_arg: REQ,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"nlm-filter-neg",
+        has_arg: OPT,
+    },
+    #[cfg(target_os = "cygwin")]
+    OptDef {
+        name: c"nlm-list",
+        has_arg: OPT,
     },
 ];
 
