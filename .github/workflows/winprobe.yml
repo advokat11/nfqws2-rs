@@ -37,12 +37,21 @@ jobs:
           ls -la z/nfq2/winws2.exe && cp /usr/bin/cygwin1.dll z/nfq2/ &&
           wget -qO wd.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip &&
           unzip -qj wd.zip "*/x64/WinDivert.dll" "*/x64/WinDivert64.sys" -d z/nfq2 &&
-          cd z/nfq2 && ls -la && cygcheck ./winws2.exe | tail -15;
+          cd z/nfq2 && ldd ./winws2.exe; cygcheck ./winws2.exe 2>&1 | grep -i "error\|not find\|cannot" ;
+          ./winws2.exe --version 2>&1; echo "direct rc=$?";
+          strace ./winws2.exe --version 2>&1 | grep -iE "error|exit|not found|STATUS" | head -20;
           { ./winws2.exe --version; echo "rc=$?"; } &&
           { ./winws2.exe --wf-tcp-out=443 --wf-udp-out=443 --wf-save=f.txt; echo "rc=$?"; cat f.txt; echo; } &&
           { ./winws2.exe --dry-run --wf-tcp-out=443 --debug=1 2>&1 | tail -4; } &&
           { timeout 20 ./winws2.exe --wf-tcp-out=443 --intercept=0 --debug=1 2>&1 | tail -8; echo "rc=$?"; } &&
           { timeout 30 ./winws2.exe --wf-tcp-out=443 --fuzz=200 --debug=1 --lua-init=@../lua/zapret-lib.lua 2>&1 | tail -4; echo "rc=$?"; } || true
+      - name: winws2 from PowerShell
+        shell: pwsh
+        run: |
+          cd z\nfq2
+          $env:PATH = "C:\cygwin\bin;$env:PATH"
+          & .\winws2.exe --version; "exit=$LASTEXITCODE"
+          & .\winws2.exe --wf-tcp-out=443 --wf-save=g.txt; "exit=$LASTEXITCODE"; Get-Content g.txt -ErrorAction SilentlyContinue
       - name: Rust x86_64-pc-cygwin hello
         shell: pwsh
         run: |
