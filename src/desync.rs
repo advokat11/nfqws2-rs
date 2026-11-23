@@ -2,7 +2,7 @@
 
 use crate::checksum::{ip4_fix_checksum, tcp_fix_checksum_addrs};
 use crate::conntrack::{
-    CtrackPosition, CtrackPositions, CtrackRef, RawPacket, RawPacketQueue, RETRANS_COUNTER_STOP,
+    CtrackPosition, CtrackPositions, CtrackRef, RETRANS_COUNTER_STOP, RawPacket, RawPacketQueue,
     SYN,
 };
 use crate::darkmagic::*;
@@ -11,7 +11,10 @@ use crate::hostlist::{hostlist_check, hostlists_reload_check_for_profile, ipset_
 use crate::log::{debug, dlog_perror, hexdump_limited_dlog, hostlist_debuglog_append};
 use crate::lua::lj;
 use crate::lua::push::*;
-use crate::params::{params, ProfileRef, RECONSTRUCT_MAX_SIZE};
+use crate::params::{
+    FASTPATH_WORKAROUND_AUTO, FASTPATH_WORKAROUND_OFF, FASTPATH_WORKAROUND_ON, ProfileRef,
+    RECONSTRUCT_MAX_SIZE, params,
+};
 use crate::pools::{hostfail_pool_add, hostfail_pool_purge_rate_limited, hostlist_pool_add};
 use crate::protocol::*;
 use crate::{dlog, dlog_err};
@@ -337,12 +340,29 @@ fn dp_find(
             let sr = ntopa46(ipr.map(|a| &a[..]), ipr6.map(|a| &a[..]));
             dlog!(
                 "desync profile search for {} ip1={} ip2={} port={} icmp={}:{} l7proto={} ssid='{}' mark=0x{:08X} hostname='{}'\n",
-                sp, s, sr, port, icmp_type, icmp_code, l7, ssid_s, fwmark, hn
+                sp,
+                s,
+                sr,
+                port,
+                icmp_type,
+                icmp_code,
+                l7,
+                ssid_s,
+                fwmark,
+                hn
             );
         } else {
             dlog!(
                 "desync profile search for {} ip={} port={} icmp={}:{} l7proto={} ssid='{}' mark=0x{:08X} hostname='{}'\n",
-                sp, s, port, icmp_type, icmp_code, l7, ssid_s, fwmark, hn
+                sp,
+                s,
+                port,
+                icmp_type,
+                icmp_code,
+                l7,
+                ssid_s,
+                fwmark,
+                hn
             );
         }
     }
@@ -464,64 +484,65 @@ fn auto_hostlist_retrans(
         ctrack_stop_retrans_counter(Some(ct));
         ct.borrow_mut().failure_detect_finalized = true;
         let reset = dp.borrow().hostlist_auto_retrans_reset;
-        if let Some(to) = dis.tcp {
-            if reset && (dis.ip || dis.ip6) {
-                let (srv_flow, srv_win) = {
-                    let c = ct.borrow();
-                    (c.pos.server.ip6flow, c.pos.server.winsize)
-                };
-                let mut p;
-                let l3;
-                if dis.ip {
-                    l3 = 20;
-                    p = vec![0u8; 40];
-                    p[..20].copy_from_slice(&pkt[..20]);
-                    p[0] = (p[0] & 0xF0) | 5;
-                    p[2..4].copy_from_slice(&40u16.to_be_bytes());
-                    p[4] = 0;
-                    p[5] = 0;
-                    p[20..40].copy_from_slice(&pkt[to..to + 20]);
-                    // reverse_ip + checksum
-                    let (s, d) = (p[12..16].to_vec(), p[16..20].to_vec());
-                    p[12..16].copy_from_slice(&d);
-                    p[16..20].copy_from_slice(&s);
-                    ip4_fix_checksum(&mut p[..20]);
-                } else {
-                    l3 = 40;
-                    p = vec![0u8; 60];
-                    p[..40].copy_from_slice(&pkt[..40]);
-                    p[4..6].copy_from_slice(&20u16.to_be_bytes());
-                    p[6] = IPPROTO_TCP;
-                    let f = if srv_flow != 0 { srv_flow } else { 0x60000000 };
-                    p[0..4].copy_from_slice(&f.to_be_bytes());
-                    p[40..60].copy_from_slice(&pkt[to..to + 20]);
-                    let (s, d) = (p[8..24].to_vec(), p[24..40].to_vec());
-                    p[8..24].copy_from_slice(&d);
-                    p[24..40].copy_from_slice(&s);
-                }
-                // reverse_tcp
-                let t = l3;
-                let (sp, dp_) = (p[t..t + 2].to_vec(), p[t + 2..t + 4].to_vec());
-                p[t..t + 2].copy_from_slice(&dp_);
-                p[t + 2..t + 4].copy_from_slice(&sp);
-                let (sq, ak) = (p[t + 4..t + 8].to_vec(), p[t + 8..t + 12].to_vec());
-                p[t + 4..t + 8].copy_from_slice(&ak);
-                p[t + 8..t + 12].copy_from_slice(&sq);
-                p[t + 12] = (p[t + 12] & 0x0F) | (5 << 4);
-                p[t + 13] = TH_RST;
-                p[t + 14..t + 16].copy_from_slice(&srv_win.to_be_bytes());
-                let (s, d) = if l3 == 20 {
-                    (p[12..16].to_vec(), p[16..20].to_vec())
-                } else {
-                    (p[8..24].to_vec(), p[24..40].to_vec())
-                };
-                tcp_fix_checksum_addrs(&mut p[t..t + 20], 20, &s, &d);
-                dlog!(
-                    "sending RST to retransmitter. ifname={}\n",
-                    ifclient.unwrap_or("")
-                );
-                rawsend(client, 0, ifclient, &p);
+        if let Some(to) = dis.tcp
+            && reset
+            && (dis.ip || dis.ip6)
+        {
+            let (srv_flow, srv_win) = {
+                let c = ct.borrow();
+                (c.pos.server.ip6flow, c.pos.server.winsize)
+            };
+            let mut p;
+            let l3;
+            if dis.ip {
+                l3 = 20;
+                p = vec![0u8; 40];
+                p[..20].copy_from_slice(&pkt[..20]);
+                p[0] = (p[0] & 0xF0) | 5;
+                p[2..4].copy_from_slice(&40u16.to_be_bytes());
+                p[4] = 0;
+                p[5] = 0;
+                p[20..40].copy_from_slice(&pkt[to..to + 20]);
+                // reverse_ip + checksum
+                let (s, d) = (p[12..16].to_vec(), p[16..20].to_vec());
+                p[12..16].copy_from_slice(&d);
+                p[16..20].copy_from_slice(&s);
+                ip4_fix_checksum(&mut p[..20]);
+            } else {
+                l3 = 40;
+                p = vec![0u8; 60];
+                p[..40].copy_from_slice(&pkt[..40]);
+                p[4..6].copy_from_slice(&20u16.to_be_bytes());
+                p[6] = IPPROTO_TCP;
+                let f = if srv_flow != 0 { srv_flow } else { 0x60000000 };
+                p[0..4].copy_from_slice(&f.to_be_bytes());
+                p[40..60].copy_from_slice(&pkt[to..to + 20]);
+                let (s, d) = (p[8..24].to_vec(), p[24..40].to_vec());
+                p[8..24].copy_from_slice(&d);
+                p[24..40].copy_from_slice(&s);
             }
+            // reverse_tcp
+            let t = l3;
+            let (sp, dp_) = (p[t..t + 2].to_vec(), p[t + 2..t + 4].to_vec());
+            p[t..t + 2].copy_from_slice(&dp_);
+            p[t + 2..t + 4].copy_from_slice(&sp);
+            let (sq, ak) = (p[t + 4..t + 8].to_vec(), p[t + 8..t + 12].to_vec());
+            p[t + 4..t + 8].copy_from_slice(&ak);
+            p[t + 8..t + 12].copy_from_slice(&sq);
+            p[t + 12] = (p[t + 12] & 0x0F) | (5 << 4);
+            p[t + 13] = TH_RST;
+            p[t + 14..t + 16].copy_from_slice(&srv_win.to_be_bytes());
+            let (s, d) = if l3 == 20 {
+                (p[12..16].to_vec(), p[16..20].to_vec())
+            } else {
+                (p[8..24].to_vec(), p[24..40].to_vec())
+            };
+            tcp_fix_checksum_addrs(&mut p[t..t + 20], 20, &s, &d);
+            dlog!(
+                "sending RST to retransmitter. ifname={}\n",
+                ifclient.unwrap_or("")
+            );
+            rawsend(client, 0, ifclient, &p);
         }
         return true;
     }
@@ -577,7 +598,12 @@ fn auto_hostlist_failed(
         thr
     ));
     if counter >= thr {
-        dlog!("auto hostlist (profile {} ({})) : fail threshold reached. about to add {} to auto hostlist\n", n, name, hs(hostname));
+        dlog!(
+            "auto hostlist (profile {} ({})) : fail threshold reached. about to add {} to auto hostlist\n",
+            n,
+            name,
+            hs(hostname)
+        );
         dp.borrow_mut()
             .hostlist_auto_fail_counters
             .shift_remove(hostname);
@@ -879,6 +905,63 @@ fn reasm_client_stop(ct: Option<&CtrackRef>, msg: &str) {
 fn reasm_client_cancel(ct: Option<&CtrackRef>) {
     reasm_client_stop(ct, "reassemble session cancelled\n");
 }
+// discard delayed originals when falling back to a retransmitted fragment
+fn reasm_client_cancel_discard(ct: &CtrackRef) {
+    let mut c = ct.borrow_mut();
+    c.reasm_client.clear();
+    c.reasm_client_payload = L7P_UNKNOWN;
+    c.delayed.clear();
+    dlog!("reassemble session cancelled, delayed packets discarded\n");
+}
+
+const FASTPATH_RETRANS_THRESHOLD: u8 = 2;
+// fastpath belongs to the local datapath, so autodetection is process-wide
+fn fastpath_detected() -> bool {
+    params().fastpath_retrans_count.get() >= FASTPATH_RETRANS_THRESHOLD
+}
+fn fastpath_update() {
+    if fastpath_detected() {
+        return;
+    }
+    let p = params();
+    p.fastpath_retrans_count
+        .set(p.fastpath_retrans_count.get() + 1);
+    dlog!(
+        "updated fastpath counter {}/{}\n",
+        p.fastpath_retrans_count.get(),
+        FASTPATH_RETRANS_THRESHOLD
+    );
+}
+
+/// A payload-less ACK occupies no sequence space and reveals no payload.
+fn make_tcp_ack_only(pkt: &[u8], dis: &Dissect, modp: &mut Vec<u8>, mod_max: usize) -> bool {
+    let Some(t) = dis.tcp else { return false };
+    if !dis.ip && !dis.ip6 {
+        return false;
+    }
+    // all L3 headers (incl. ip6 ext) + TCP header with options
+    let len = dis.len_l3 + dis.len_l4;
+    if mod_max < len {
+        return false;
+    }
+    modp.clear();
+    modp.extend_from_slice(&pkt[..len]);
+    modp[t + 13] &= !TH_PUSH; // PSH without payload is meaningless
+    if dis.ip {
+        modp[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+        ip4_fix_checksum(modp);
+    } else {
+        modp[4..6].copy_from_slice(&((len - 40) as u16).to_be_bytes());
+    }
+    let (s, d) = if dis.ip {
+        (modp[12..16].to_vec(), modp[16..20].to_vec())
+    } else {
+        (modp[8..24].to_vec(), modp[24..40].to_vec())
+    };
+    tcp_fix_checksum_addrs(&mut modp[t..len], dis.len_l4, &s, &d);
+    true
+}
+
 fn reasm_client_fin(ct: Option<&CtrackRef>) {
     reasm_client_stop(ct, "reassemble session finished\n");
 }
@@ -1058,11 +1141,11 @@ fn ipcache_update_ttl(
             dlog!("updated ttl cache\n");
             ipc.ttl = ttl;
         }
-    } else if let Some(ipc) = c.find(a4, a6, iface) {
-        if ipc.ttl != 0 {
-            dlog!("got cached ttl {}\n", ipc.ttl);
-            ct.borrow_mut().incoming_ttl = ipc.ttl;
-        }
+    } else if let Some(ipc) = c.find(a4, a6, iface)
+        && ipc.ttl != 0
+    {
+        dlog!("got cached ttl {}\n", ipc.ttl);
+        ct.borrow_mut().incoming_ttl = ipc.ttl;
     }
 }
 
@@ -1078,11 +1161,11 @@ fn ipcache_get_ttl(
         return;
     }
     let mut c = p.ipcache.borrow_mut();
-    if let Some(ipc) = c.find(a4, a6, iface) {
-        if ipc.ttl != 0 {
-            dlog!("got cached ttl {}\n", ipc.ttl);
-            ct.borrow_mut().incoming_ttl = ipc.ttl;
-        }
+    if let Some(ipc) = c.find(a4, a6, iface)
+        && ipc.ttl != 0
+    {
+        dlog!("got cached ttl {}\n", ipc.ttl);
+        ct.borrow_mut().incoming_ttl = ipc.ttl;
     }
 }
 
@@ -1245,7 +1328,11 @@ fn desync(
                         if range.upper_cutoff { '<' } else { '-' },
                         range.to.mode as char,
                         range.to.pos,
-                        if ctrack.is_some() { "enabled" } else { "disabled" }
+                        if ctrack.is_some() {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
                     );
                 } else {
                     cutoff_all = false;
@@ -1749,13 +1836,14 @@ fn play_prolog(
                 };
                 hostname = h;
                 hip = i;
-                if hostname.is_none() && !ps.rev {
-                    if let Some((h, i)) = ipcache_get_hostname(a4(&ps.ep.sdip4), a6(&ps.ep.sdip6)) {
-                        hip = i;
-                        ps.host = h.clone();
-                        c.borrow_mut().hostname = Some(h.clone());
-                        hostname = Some(h);
-                    }
+                if hostname.is_none()
+                    && !ps.rev
+                    && let Some((h, i)) = ipcache_get_hostname(a4(&ps.ep.sdip4), a6(&ps.ep.sdip6))
+                {
+                    hip = i;
+                    ps.host = h.clone();
+                    c.borrow_mut().hostname = Some(h.clone());
+                    hostname = Some(h);
                 }
             }
             ps.dp = dp_find(
@@ -1941,10 +2029,10 @@ fn dp_rediscovery(ps: &mut PlayState, dis: &Dissect) -> bool {
             }
         }
     }
-    if let Some(c) = &ps.ctrack_replay {
-        if dis.proto == IPPROTO_UDP {
-            process_udp_fail(c, ps.tpos.as_ref(), &ps.ep.src);
-        }
+    if let Some(c) = &ps.ctrack_replay
+        && dis.proto == IPPROTO_UDP
+    {
+        process_udp_fail(c, ps.tpos.as_ref(), &ps.ep.src);
     }
     if cs.done && !cs.result {
         dlog!("not applying tampering because of previous negative hostlist check\n");
@@ -1996,6 +2084,10 @@ fn tcp_packet_play(
     enum Next {
         Rediscover,
         ReasmCancelRediscover,
+        /// fastpath workaround: reasm discarded, desync this fragment on its own
+        DiscardRediscover,
+        /// fastpath workaround: replace the held fragment with a payload-less ACK
+        AckOnly,
         Return(u8),
     }
     let next = (|| -> Next {
@@ -2083,7 +2175,12 @@ fn tcp_packet_play(
                                 );
                                 hostlist_debuglog_append(&format!(
                                     "{} : profile {} ({}) : client {} : proto {} : rseq {} : incoming RST",
-                                    hstr, n, name, cip, l7s(ps.l7proto), rseq
+                                    hstr,
+                                    n,
+                                    name,
+                                    cip,
+                                    l7s(ps.l7proto),
+                                    rseq
                                 ));
                                 fail = true;
                             } else if dis.len_payload != 0 && ps.l7payload == L7P_HTTP_REPLY {
@@ -2097,13 +2194,22 @@ fn tcp_packet_play(
                                     host.as_deref().unwrap_or(b""),
                                 );
                                 if fail {
-                                    dlog!("redirect to another domain detected. possibly DPI redirect.\n");
+                                    dlog!(
+                                        "redirect to another domain detected. possibly DPI redirect.\n"
+                                    );
                                     hostlist_debuglog_append(&format!(
                                         "{} : profile {} ({}) : client {} : proto {} : rseq {} : redirect to another domain",
-                                        hstr, n, name, cip, l7s(ps.l7proto), rseq
+                                        hstr,
+                                        n,
+                                        name,
+                                        cip,
+                                        l7s(ps.l7proto),
+                                        rseq
                                     ));
                                 } else {
-                                    dlog!("local or in-domain redirect detected. it's not a DPI redirect.\n");
+                                    dlog!(
+                                        "local or in-domain redirect detected. it's not a DPI redirect.\n"
+                                    );
                                 }
                             }
                             if fail {
@@ -2131,11 +2237,11 @@ fn tcp_packet_play(
                     let c = c.borrow();
                     rdata = c.reasm_client.packet[..c.reasm_client.size_present].to_vec();
                 }
-            } else if reasm_client_feed(ps.ctrack.as_ref(), IPPROTO_TCP, payload) {
-                if let Some(c) = &ps.ctrack {
-                    let c = c.borrow();
-                    rdata = c.reasm_client.packet[..c.reasm_client.size_present].to_vec();
-                }
+            } else if reasm_client_feed(ps.ctrack.as_ref(), IPPROTO_TCP, payload)
+                && let Some(c) = &ps.ctrack
+            {
+                let c = c.borrow();
+                rdata = c.reasm_client.packet[..c.reasm_client.size_present].to_vec();
             }
             process_retrans_fail(ps.ctrack.as_ref(), pkt, dis, &ps.ep.src, ifin);
             if ps
@@ -2219,56 +2325,93 @@ fn tcp_packet_play(
                 if full {
                     tls_debug(&rdata);
                 }
-                if let Some(ct) = ps.ctrack.clone() {
-                    if !l7_payload_match(ps.l7payload, p.reasm_payload_disable) {
-                        let (empty, retr) = {
-                            let c = ct.borrow();
-                            (c.reasm_client.is_empty(), is_retransmission(&c.pos.client))
-                        };
-                        if !full
-                            && empty
-                            && !retr
-                            && !reasm_client_start(
-                                Some(&ct),
-                                IPPROTO_TCP,
-                                L7P_TLS_CLIENT_HELLO,
-                                tls_record_len(payload),
-                                TCP_MAX_REASM,
-                                payload,
-                            )
+                if let Some(ct) = ps.ctrack.clone()
+                    && !l7_payload_match(ps.l7payload, p.reasm_payload_disable)
+                {
+                    let (empty, retr) = {
+                        let c = ct.borrow();
+                        (c.reasm_client.is_empty(), is_retransmission(&c.pos.client))
+                    };
+                    if !full
+                        && empty
+                        && !retr
+                        && !reasm_client_start(
+                            Some(&ct),
+                            IPPROTO_TCP,
+                            L7P_TLS_CLIENT_HELLO,
+                            tls_record_len(payload),
+                            TCP_MAX_REASM,
+                            payload,
+                        )
+                    {
+                        return Next::Rediscover;
+                    }
+                    if !ct.borrow().reasm_client.is_empty() {
+                        // Treat retransmission during incomplete reasm as a fastpath bypass.
+                        // Discard queued originals to avoid exposing SNI and retry this
+                        // fragment normally.
+                        if p.fastpath_workaround != FASTPATH_WORKAROUND_OFF
+                            && is_retransmission(&ct.borrow().pos.client)
                         {
-                            return Next::Rediscover;
+                            if p.fastpath_workaround == FASTPATH_WORKAROUND_AUTO {
+                                fastpath_update();
+                            }
+                            dlog!(
+                                "retransmission while reasm is incomplete (fastpath steals further fragments). discarding reasm, falling back to single packet desync\n"
+                            );
+                            reasm_client_cancel_discard(&ct);
+                            return Next::DiscardRediscover;
                         }
-                        if !ct.borrow().reasm_client.is_empty() {
-                            let pos = ct.borrow().pos;
-                            let rp = RawPacket {
-                                dst: ps.ep.dst,
-                                ifin: crate::conntrack::ifname_copy(ifin),
-                                ifout: crate::conntrack::ifname_copy(ifout),
-                                fwmark_orig: fwmark,
-                                fwmark: desync_fwmark,
-                                packet: pkt[..dis.len_pkt].to_vec(),
-                                len_payload: dis.len_payload,
-                                tpos: Some(pos),
-                                server_side: false,
-                            };
-                            if ct.borrow_mut().delayed.push(rp) {
-                                dlog!(
-                                    "DELAY desync until reasm is complete (#{})\n",
-                                    ct.borrow().delayed.count()
-                                );
-                            } else {
-                                dlog_err!("rawpacket_queue failed !\n");
-                                return Next::ReasmCancelRediscover;
+                        let pos = ct.borrow().pos;
+                        let rp = RawPacket {
+                            dst: ps.ep.dst,
+                            ifin: crate::conntrack::ifname_copy(ifin),
+                            ifout: crate::conntrack::ifname_copy(ifout),
+                            fwmark_orig: fwmark,
+                            fwmark: desync_fwmark,
+                            packet: pkt[..dis.len_pkt].to_vec(),
+                            len_payload: dis.len_payload,
+                            tpos: Some(pos),
+                            server_side: false,
+                        };
+                        if ct.borrow_mut().delayed.push(rp) {
+                            dlog!(
+                                "DELAY desync until reasm is complete (#{})\n",
+                                ct.borrow().delayed.count()
+                            );
+                        } else {
+                            dlog_err!("rawpacket_queue failed !\n");
+                            return Next::ReasmCancelRediscover;
+                        }
+                        if ct.borrow().reasm_client.is_full() {
+                            if p.fastpath_workaround == FASTPATH_WORKAROUND_AUTO
+                                && !fastpath_detected()
+                            {
+                                p.fastpath_retrans_count.set(0);
                             }
-                            if ct.borrow().reasm_client.is_full() {
-                                let mut q = std::mem::take(&mut ct.borrow_mut().delayed);
-                                replay_queue(&mut q);
-                                ct.borrow_mut().delayed.max_packets = q.max_packets;
-                                reasm_client_fin(Some(&ct));
-                            }
+                            let mut q = std::mem::take(&mut ct.borrow_mut().delayed);
+                            replay_queue(&mut q);
+                            ct.borrow_mut().delayed.max_packets = q.max_packets;
+                            reasm_client_fin(Some(&ct));
                             return Next::Return(VERDICT_DROP);
                         }
+                        // On affected hardware DROP activates RTCACHE and later fragments
+                        // bypass NFQUEUE. ACK-only placeholders keep the flow on the slow
+                        // path until replay.
+                        if p.fastpath_workaround == FASTPATH_WORKAROUND_ON
+                            || (p.fastpath_workaround == FASTPATH_WORKAROUND_AUTO
+                                && fastpath_detected())
+                        {
+                            // control flags are unsafe after removing the payload or before replay
+                            if tflags & (TH_FIN | TH_RST | TH_URG) != 0 {
+                                dlog!(
+                                    "not replacing incomplete reasm fragment with ACK-only because TCP control flags are set\n"
+                                );
+                                return Next::Return(VERDICT_DROP);
+                            }
+                            return Next::AckOnly;
+                        }
+                        return Next::Return(VERDICT_DROP);
                     }
                 }
                 let h = tls_hello_extract_host(&rdata, 256, true);
@@ -2291,6 +2434,23 @@ fn tcp_packet_play(
             reasm_client_cancel(ps.ctrack.as_ref());
             rdata = payload.to_vec();
             ps.l7payload = L7P_UNKNOWN;
+        }
+        Next::DiscardRediscover => {
+            rdata = payload.to_vec();
+            let h = tls_hello_extract_host(&rdata, 256, true);
+            ps.have_host = h.is_some();
+            ps.host = host_trunc(h).unwrap_or_default();
+        }
+        Next::AckOnly => {
+            let max = out.max;
+            if make_tcp_ack_only(pkt, dis, out.buf, max) {
+                dlog!(
+                    "replacing incomplete reasm fragment with ACK-only packet (hardware fastpath workaround)\n"
+                );
+                return VERDICT_MODIFY | VERDICT_NOCSUM;
+            }
+            dlog_err!("failed to build ACK-only reasm placeholder. dropping\n");
+            return VERDICT_DROP;
         }
         Next::Rediscover => {}
     }
@@ -2628,17 +2788,17 @@ fn udp_packet_play(
             match pclean.take() {
                 Some(mut clean) => {
                     let reasm_disable = l7_payload_match(ps.l7payload, p.reasm_payload_disable);
-                    if let Some(ct) = ps.ctrack.clone() {
-                        if !reasm_disable && !ct.borrow().reasm_client.is_empty() {
-                            if ct.borrow().reasm_client.has_space(clean.len()) {
-                                reasm_client_feed(Some(&ct), IPPROTO_UDP, &clean_orig);
-                                let c = ct.borrow();
-                                clean =
-                                    c.reasm_client.packet[..c.reasm_client.size_present].to_vec();
-                            } else {
-                                dlog!("QUIC reasm is too long. cancelling.\n");
-                                return None;
-                            }
+                    if let Some(ct) = ps.ctrack.clone()
+                        && !reasm_disable
+                        && !ct.borrow().reasm_client.is_empty()
+                    {
+                        if ct.borrow().reasm_client.has_space(clean.len()) {
+                            reasm_client_feed(Some(&ct), IPPROTO_UDP, &clean_orig);
+                            let c = ct.borrow();
+                            clean = c.reasm_client.packet[..c.reasm_client.size_present].to_vec();
+                        } else {
+                            dlog!("QUIC reasm is too long. cancelling.\n");
+                            return None;
                         }
                     }
                     match quic_defrag_crypto(&clean, UDP_MAX_REASM) {
@@ -2660,99 +2820,27 @@ fn udp_packet_play(
                                         "packet does not contain TLS ClientHello\n"
                                     }
                                 );
-                                if req_full {
-                                    if let Some((o, l)) = hello {
-                                        tls_debug_handshake(&defrag[o..o + l]);
-                                    }
+                                if req_full && let Some((o, l)) = hello {
+                                    tls_debug_handshake(&defrag[o..o + l]);
                                 }
-                                if let Some(ct) = ps.ctrack.clone() {
-                                    if !reasm_disable {
-                                        if hello.is_some()
-                                            && !req_full
-                                            && ct.borrow().reasm_client.is_empty()
-                                            && !reasm_client_start(
-                                                Some(&ct),
-                                                IPPROTO_UDP,
-                                                L7P_QUIC_INITIAL,
-                                                UDP_MAX_REASM,
-                                                UDP_MAX_REASM,
-                                                &clean_orig,
-                                            )
-                                        {
-                                            return None;
-                                        }
-                                        if !ct.borrow().reasm_client.is_empty() {
-                                            let pos = ct.borrow().pos;
-                                            let rp = RawPacket {
-                                                dst: ps.ep.dst,
-                                                ifin: crate::conntrack::ifname_copy(ifin),
-                                                ifout: crate::conntrack::ifname_copy(ifout),
-                                                fwmark_orig: fwmark,
-                                                fwmark: desync_fwmark,
-                                                packet: pkt[..dis.len_pkt].to_vec(),
-                                                len_payload: dis.len_payload,
-                                                tpos: Some(pos),
-                                                server_side: false,
-                                            };
-                                            if ct.borrow_mut().delayed.push(rp) {
-                                                dlog!(
-                                                    "DELAY desync until reasm is complete (#{})\n",
-                                                    ct.borrow().delayed.count()
-                                                );
-                                            } else {
-                                                dlog_err!("rawpacket_queue failed !\n");
-                                                return None;
-                                            }
-                                            if req_full {
-                                                let mut q =
-                                                    std::mem::take(&mut ct.borrow_mut().delayed);
-                                                replay_queue(&mut q);
-                                                ct.borrow_mut().delayed.max_packets = q.max_packets;
-                                                reasm_client_fin(Some(&ct));
-                                            }
-                                            let max = out.max;
-                                            return Some(ct_new_postnat_fix(
-                                                Some(&ct),
-                                                pkt,
-                                                dis,
-                                                out.buf,
-                                                max,
-                                            ));
-                                        }
+                                if let Some(ct) = ps.ctrack.clone()
+                                    && !reasm_disable
+                                {
+                                    if hello.is_some()
+                                        && !req_full
+                                        && ct.borrow().reasm_client.is_empty()
+                                        && !reasm_client_start(
+                                            Some(&ct),
+                                            IPPROTO_UDP,
+                                            L7P_QUIC_INITIAL,
+                                            UDP_MAX_REASM,
+                                            UDP_MAX_REASM,
+                                            &clean_orig,
+                                        )
+                                    {
+                                        return None;
                                     }
-                                }
-                                match hello {
-                                    Some((o, l)) => {
-                                        let d = defrag[o..o + l].to_vec();
-                                        let h =
-                                            tls_hello_extract_host_from_handshake(&d, 256, true);
-                                        ps.have_host = h.is_some();
-                                        ps.host = h.unwrap_or_default();
-                                        ddata = Some(d);
-                                    }
-                                    None => quic_reasm_cancel(
-                                        ps.ctrack.as_ref(),
-                                        "QUIC initial without ClientHello",
-                                    ),
-                                }
-                            } else {
-                                dlog!(
-                                    "QUIC initial contains CRYPTO with partial fragment coverage\n"
-                                );
-                                if let Some(ct) = ps.ctrack.clone() {
-                                    if !reasm_disable {
-                                        if ct.borrow().reasm_client.is_empty()
-                                            && !reasm_client_start(
-                                                Some(&ct),
-                                                IPPROTO_UDP,
-                                                L7P_QUIC_INITIAL,
-                                                UDP_MAX_REASM,
-                                                UDP_MAX_REASM,
-                                                &clean_orig,
-                                            )
-                                        {
-                                            return None;
-                                        }
+                                    if !ct.borrow().reasm_client.is_empty() {
                                         let pos = ct.borrow().pos;
                                         let rp = RawPacket {
                                             dst: ps.ep.dst,
@@ -2774,6 +2862,13 @@ fn udp_packet_play(
                                             dlog_err!("rawpacket_queue failed !\n");
                                             return None;
                                         }
+                                        if req_full {
+                                            let mut q =
+                                                std::mem::take(&mut ct.borrow_mut().delayed);
+                                            replay_queue(&mut q);
+                                            ct.borrow_mut().delayed.max_packets = q.max_packets;
+                                            reasm_client_fin(Some(&ct));
+                                        }
                                         let max = out.max;
                                         return Some(ct_new_postnat_fix(
                                             Some(&ct),
@@ -2783,6 +2878,69 @@ fn udp_packet_play(
                                             max,
                                         ));
                                     }
+                                }
+                                match hello {
+                                    Some((o, l)) => {
+                                        let d = defrag[o..o + l].to_vec();
+                                        let h =
+                                            tls_hello_extract_host_from_handshake(&d, 256, true);
+                                        ps.have_host = h.is_some();
+                                        ps.host = h.unwrap_or_default();
+                                        ddata = Some(d);
+                                    }
+                                    None => quic_reasm_cancel(
+                                        ps.ctrack.as_ref(),
+                                        "QUIC initial without ClientHello",
+                                    ),
+                                }
+                            } else {
+                                dlog!(
+                                    "QUIC initial contains CRYPTO with partial fragment coverage\n"
+                                );
+                                if let Some(ct) = ps.ctrack.clone()
+                                    && !reasm_disable
+                                {
+                                    if ct.borrow().reasm_client.is_empty()
+                                        && !reasm_client_start(
+                                            Some(&ct),
+                                            IPPROTO_UDP,
+                                            L7P_QUIC_INITIAL,
+                                            UDP_MAX_REASM,
+                                            UDP_MAX_REASM,
+                                            &clean_orig,
+                                        )
+                                    {
+                                        return None;
+                                    }
+                                    let pos = ct.borrow().pos;
+                                    let rp = RawPacket {
+                                        dst: ps.ep.dst,
+                                        ifin: crate::conntrack::ifname_copy(ifin),
+                                        ifout: crate::conntrack::ifname_copy(ifout),
+                                        fwmark_orig: fwmark,
+                                        fwmark: desync_fwmark,
+                                        packet: pkt[..dis.len_pkt].to_vec(),
+                                        len_payload: dis.len_payload,
+                                        tpos: Some(pos),
+                                        server_side: false,
+                                    };
+                                    if ct.borrow_mut().delayed.push(rp) {
+                                        dlog!(
+                                            "DELAY desync until reasm is complete (#{})\n",
+                                            ct.borrow().delayed.count()
+                                        );
+                                    } else {
+                                        dlog_err!("rawpacket_queue failed !\n");
+                                        return None;
+                                    }
+                                    let max = out.max;
+                                    return Some(ct_new_postnat_fix(
+                                        Some(&ct),
+                                        pkt,
+                                        dis,
+                                        out.buf,
+                                        max,
+                                    ));
                                 }
                                 quic_reasm_cancel(
                                     ps.ctrack.as_ref(),
@@ -2900,16 +3058,16 @@ fn icmp_packet(
                     dlog!("found conntrack entry. inverted reverse={}\n", rev as u8);
                     {
                         let c = ct.borrow();
-                        if c.dp_search_complete {
-                            if let Some(d) = &c.dp {
-                                dp = Some(d.clone());
-                                let db = d.borrow();
-                                dlog!(
-                                    "using desync profile {} ({}) from conntrack entry\n",
-                                    db.n,
-                                    db.name_str()
-                                );
-                            }
+                        if c.dp_search_complete
+                            && let Some(d) = &c.dp
+                        {
+                            dp = Some(d.clone());
+                            let db = d.borrow();
+                            dlog!(
+                                "using desync profile {} ({}) from conntrack entry\n",
+                                db.n,
+                                db.name_str()
+                            );
                         }
                     }
                     ctrack = Some(ct);
@@ -2978,20 +3136,12 @@ fn icmp_packet(
         }
     }
     let sd6 = if dis.ip6 {
-        if rev_fixed {
-            s6
-        } else {
-            d6
-        }
+        if rev_fixed { s6 } else { d6 }
     } else {
         None
     };
     let sd4 = if dis.ip {
-        if rev_fixed {
-            s4
-        } else {
-            d4
-        }
+        if rev_fixed { s4 } else { d4 }
     } else {
         None
     };
@@ -3077,20 +3227,12 @@ fn ip_packet(
     };
     let rev = ifin.is_some_and(|s| !s.is_empty()) && ifout.is_none_or(|s| s.is_empty());
     let sd6 = if dis.ip6 {
-        if rev {
-            s6
-        } else {
-            d6
-        }
+        if rev { s6 } else { d6 }
     } else {
         None
     };
     let sd4 = if dis.ip {
-        if rev {
-            s4
-        } else {
-            d4
-        }
+        if rev { s4 } else { d4 }
     } else {
         None
     };

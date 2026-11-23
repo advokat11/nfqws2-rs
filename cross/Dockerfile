@@ -1,6 +1,6 @@
 # Cross-build image for nfqws2 (Debian 12, x86-64 host):
 #   aarch64-unknown-linux-gnu  - stable Rust, Debian arm64 multiarch libraries
-#   mipsel-unknown-linux-gnu   - nightly Rust (-Zbuild-std, tier-3 target), C libraries
+#   mipsel-unknown-linux-gnu   - std built from source (-Zbuild-std, tier-3 target), C libraries
 #                                built from Debian sources by deps-mipsel.sh
 # Usage: see cross/build.sh
 FROM debian:bookworm
@@ -14,9 +14,9 @@ RUN dpkg --add-architecture arm64 \
  && rm -rf /var/lib/apt/lists/*
 COPY deps-mipsel.sh /usr/local/bin/
 RUN sh /usr/local/bin/deps-mipsel.sh
-RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.88.0 \
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.100.0 \
  && /root/.cargo/bin/rustup target add aarch64-unknown-linux-gnu \
- && /root/.cargo/bin/rustup toolchain install nightly --profile minimal -c rust-src
+ && /root/.cargo/bin/rustup component add rust-src
 ENV PATH=/root/.cargo/bin:$PATH \
     PKG_CONFIG_ALLOW_CROSS=1 \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \

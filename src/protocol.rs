@@ -539,23 +539,23 @@ pub fn http_pos(marker: u8, pos: i16, data: &[u8]) -> isize {
             check_pos(sz, m as isize + pos as isize)
         }
         PM_HOST | PM_HOST_END | PM_HOST_SLD | PM_HOST_MIDSLD | PM_HOST_ENDSLD => {
-            if let Some(h) = http_find_host(data) {
-                if h + 7 < sz {
-                    let mut h = h + 5;
-                    if data[h] == b' ' || data[h] == b'\t' {
-                        h += 1;
-                    }
-                    let mut len_host = 0;
-                    if marker != PM_HOST {
-                        while h + len_host < sz
-                            && data[h + len_host] != b'\r'
-                            && data[h + len_host] != b'\n'
-                        {
-                            len_host += 1;
-                        }
-                    }
-                    return host_pos(marker, pos, data, h, len_host);
+            if let Some(h) = http_find_host(data)
+                && h + 7 < sz
+            {
+                let mut h = h + 5;
+                if data[h] == b' ' || data[h] == b'\t' {
+                    h += 1;
                 }
+                let mut len_host = 0;
+                if marker != PM_HOST {
+                    while h + len_host < sz
+                        && data[h + len_host] != b'\r'
+                        && data[h + len_host] != b'\n'
+                    {
+                        len_host += 1;
+                    }
+                }
+                return host_pos(marker, pos, data, h, len_host);
             }
             POS_NOT_FOUND
         }

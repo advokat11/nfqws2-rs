@@ -15,6 +15,9 @@ Lua scripting API. Existing zapret2 Lua scripts (`zapret-lib.lua`, `zapret-antid
   privilege drop, seccomp hardening, nl80211 SSID filtering.
 - Not ported: Windows (WinDivert), BSD (divert sockets) and Android targets.
 - Ported from upstream commit `31b2450` (2026-11-19).
+- Also has `--fastpath-workaround=0|1|auto` from nfqws2-keenetic's
+  [patch](https://github.com/nfqws/nfqws2-keenetic/tree/master/patches) (TLS reassembly on
+  routers with hardware fastpath, such as MT7621); off by default, as in the patched C.
 
 ## Verification
 
@@ -34,7 +37,7 @@ decisions are listed in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Building
 
-Linux only. Needs Rust 1.88+ and the same system libraries as the C version:
+Linux only. Needs Rust 1.100+ and the same system libraries as the C version:
 
 ```sh
 # Debian/Ubuntu
@@ -49,27 +52,48 @@ docker build -t nfqws2-rs .
 docker run --rm -v "$PWD/out":/out nfqws2-rs
 ```
 
-### Other architectures
+### Other architectures (glibc)
 
-`cross/build.sh aarch64` and `cross/build.sh mipsel` cross-compile in Docker (Debian 12
-toolchains; mipsel is a tier-3 Rust target and uses nightly `-Zbuild-std`). The binary is
-`target/<triple>/release/nfqws2` and needs the target's LuaJIT, zlib and
-libnetfilter_queue, like the C build.
+`cross/build.sh aarch64` and `cross/build.sh mipsel` cross-compile dynamically linked glibc
+builds in Docker (Debian 12 toolchains; mipsel is a tier-3 Rust target, so std is built from
+source with `-Zbuild-std`). The binary is `target/<triple>/release/nfqws2` and needs the
+target's LuaJIT, zlib and libnetfilter_queue, like the C build. For routers, use the static
+musl builds below. The glibc x86_64 build matches the C one on all 121 cases (Rust 1.100);
+aarch64 and mipsel matched it under qemu-user except for the 32-bit `blobs` case described
+below and, on hard-float mipsel only, a test that depends on floating point, which qemu
+emulates wrongly there. Architecture-specific behavior of the C code that the port follows
+is listed in ADR-012.
 
-Each target was compared with the C original built for the same target (aarch64 and mipsel
-under qemu-user):
+### Routers (static musl builds, nfqws2-keenetic)
+
+`musl/build.sh <arch>` builds a static binary for `arm64`, `arm` (ARMv6), `mips64`,
+`mipselsf`, `mipssf` (soft-float MIPS32), `ppc`, `x86` or `x86_64`, with the toolchains,
+library versions and flags of the zapret2 release recipe that
+[nfqws2-keenetic](https://github.com/nfqws/nfqws2-keenetic) uses, and packs it as
+`out/musl/nfqws2-<arch>.tar.gz` in that project's layout (`binaries/linux-<arch>/nfqws2`,
+UPX-packed except mips64; `lua/` in the arm64 archive). The `musl` workflow builds all of
+them and attaches them to the release for a `v*` tag. Differences from the C recipe:
+dependencies are built without `-flto`, and x86 uses LuaJIT (the C recipe uses PUC Lua 5.5
+there), so the x86 build needs an SSE2 CPU. Not built: riscv64 and lexra (LuaJIT has no
+port for them; upstream uses PUC Lua there, which the port does not support).
+
+Each build was compared with the C original (with the same patch) built by the same
+toolchain against the same libraries, under qemu-user, Rust 1.100:
 
 | target | corpus (121 cases) |
 |---|---|
-| x86_64 | 121/121 identical |
-| aarch64 | 121/121 identical |
-| mipsel | 119/121 identical |
+| arm64, x86, x86_64 | 121/121 identical |
+| arm, mipsel, mips, ppc | 120/121 identical |
+| mips64 | 120/121 identical |
 
-The two mipsel differences are not in the port. `blobs`: the C code prints a 64-bit offset
-with `%zu`, which shows garbage on 32-bit targets (the port prints the real offset).
-`lua-shipped`: LuaJIT's math is broken under qemu-mipsel (`math.floor(3.5)` returns 3.5
-even in plain `luajit`), so the random-based test diverges; it needs real MIPS hardware.
-Architecture-specific behavior of the C code that the port follows is listed in ADR-012.
+The `blobs` difference on 32-bit ARM, MIPS and PowerPC is the C code printing a 64-bit
+offset with `%zu` (garbage there; the port prints the real offset). The mips64 difference
+is `fuzz-antidpi`, where LuaJIT's JIT takes a bus error on an unaligned access under
+qemu-user (which, unlike the Linux kernel, does not emulate those); which of the two
+programs hits it depends on memory layout, and with the JIT off both outputs are identical.
+The x86_64 builds (glibc and musl) also matched the C ones in live NFQUEUE runs with
+`--fastpath-workaround=0`, `1` and `auto`, including retransmitted ClientHello fragments and
+ACK-only placeholders.
 
 ## Usage
 

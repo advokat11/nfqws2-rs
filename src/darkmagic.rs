@@ -2,7 +2,7 @@
 //! Packets are byte slices; headers are addressed by offset instead of struct pointers.
 
 use crate::dlog;
-use crate::helpers::{ntop4, ntop6, pntoh16, pntoh32, SockAddr};
+use crate::helpers::{SockAddr, ntop4, ntop6, pntoh16, pntoh32};
 use crate::log::{dlog_perror, dlog_perror_errno};
 use std::cell::Cell;
 
@@ -265,7 +265,8 @@ pub fn str_icmphdr(v6: bool, i: &[u8]) -> String {
 pub fn str_icmphdr_full(v6: bool, i: &[u8]) -> String {
     let st = trunc(str_icmp_type_name(v6, i[0]), 32);
     let t = i[0];
-    let s = if t == 8 || t == 0 || t == 128 || t == 129 {
+
+    if t == 8 || t == 0 || t == 128 || t == 129 {
         format!(
             "icmp_type={} icmp_code={} id=0x{:04X} seq={}",
             st,
@@ -280,8 +281,7 @@ pub fn str_icmphdr_full(v6: bool, i: &[u8]) -> String {
             i[1],
             pntoh32(&i[4..])
         )
-    };
-    s
+    }
 }
 
 // ---- protocol checks ----
@@ -687,8 +687,8 @@ fn setsockopt_int(fd: i32, level: i32, opt: i32, v: i32) -> bool {
 pub fn dbgprint_socket_buffers(fd: i32) {
     if crate::log::debug() {
         for (opt, name) in [
-            (libc::SO_RCVBUF, "SO_RCVBUF"),
-            (libc::SO_SNDBUF, "SO_SNDBUF"),
+            (crate::sys::sock::SO_RCVBUF, "SO_RCVBUF"),
+            (crate::sys::sock::SO_SNDBUF, "SO_SNDBUF"),
         ] {
             let mut v: i32 = 0;
             let mut sz = std::mem::size_of::<i32>() as u32;
@@ -696,7 +696,7 @@ pub fn dbgprint_socket_buffers(fd: i32) {
             if unsafe {
                 libc::getsockopt(
                     fd,
-                    libc::SOL_SOCKET,
+                    crate::sys::sock::SOL_SOCKET,
                     opt,
                     &mut v as *mut i32 as *mut _,
                     &mut sz,
@@ -716,11 +716,25 @@ pub fn set_socket_buffers(fd: i32, rcvbuf: i32, sndbuf: i32) -> bool {
         rcvbuf,
         sndbuf
     );
-    if rcvbuf != 0 && !setsockopt_int(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, rcvbuf) {
+    if rcvbuf != 0
+        && !setsockopt_int(
+            fd,
+            crate::sys::sock::SOL_SOCKET,
+            crate::sys::sock::SO_RCVBUF,
+            rcvbuf,
+        )
+    {
         dlog_perror("setsockopt (SO_RCVBUF)");
         return false;
     }
-    if sndbuf != 0 && !setsockopt_int(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, sndbuf) {
+    if sndbuf != 0
+        && !setsockopt_int(
+            fd,
+            crate::sys::sock::SOL_SOCKET,
+            crate::sys::sock::SO_SNDBUF,
+            sndbuf,
+        )
+    {
         dlog_perror("setsockopt (SO_SNDBUF)");
         return false;
     }
@@ -740,11 +754,7 @@ fn rawsend_socket_raw(domain: i32, proto: i32) -> i32 {
 }
 
 fn family_cell(v6: bool) -> &'static std::thread::LocalKey<Cell<i32>> {
-    if v6 {
-        &SOCK6
-    } else {
-        &SOCK4
-    }
+    if v6 { &SOCK6 } else { &SOCK4 }
 }
 
 fn rawsend_socket(v6: bool) -> i32 {
@@ -767,7 +777,12 @@ fn rawsend_socket(v6: bool) -> i32 {
         cell.with(|c| c.set(-1));
         -1
     };
-    if !setsockopt_int(fd, libc::SOL_SOCKET, libc::SO_PRIORITY, 6) {
+    if !setsockopt_int(
+        fd,
+        crate::sys::sock::SOL_SOCKET,
+        crate::sys::sock::SO_PRIORITY,
+        6,
+    ) {
         return fail("rawsend: setsockopt(SO_PRIORITY)");
     }
     if !v6 && !setsockopt_int(fd, libc::IPPROTO_IP, 22 /* IP_NODEFRAG */, 1) {
@@ -813,7 +828,12 @@ pub fn rawsend(dst: &SockAddr, fwmark: u32, ifout: Option<&str>, data: &[u8]) ->
     if sock == -1 {
         return false;
     }
-    if !setsockopt_int(sock, libc::SOL_SOCKET, libc::SO_MARK, fwmark as i32) {
+    if !setsockopt_int(
+        sock,
+        crate::sys::sock::SOL_SOCKET,
+        crate::sys::sock::SO_MARK,
+        fwmark as i32,
+    ) {
         dlog_perror("rawsend: setsockopt(SO_MARK)");
         return false;
     }
@@ -840,8 +860,8 @@ pub fn rawsend(dst: &SockAddr, fwmark: u32, ifout: Option<&str>, data: &[u8]) ->
         let r = unsafe {
             libc::setsockopt(
                 sock,
-                libc::SOL_SOCKET,
-                libc::SO_BINDTODEVICE,
+                crate::sys::sock::SOL_SOCKET,
+                crate::sys::sock::SO_BINDTODEVICE,
                 if l > 0 {
                     p.as_ptr() as *const _
                 } else {
@@ -933,7 +953,8 @@ pub fn make_writable_dir(writable_dir: &str, uid: u32) -> bool {
         }
     }
     if b {
-        std::env::set_var("WRITABLE", &wrdir);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WRITABLE", &wrdir) };
     }
     b
 }

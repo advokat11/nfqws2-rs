@@ -8,7 +8,7 @@ jobs:
       - name: System libraries
         run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev libnfnetlink-dev libmnl-dev zlib1g-dev libluajit-5.1-dev pkg-config
       - name: Toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal -c clippy -c rustfmt && rustup default 1.88.0
+        run: rustup toolchain install 1.100.0 --profile minimal -c clippy -c rustfmt && rustup default 1.100.0
       - run: cargo fmt --check
       - run: cargo clippy --release --locked -- -D warnings
       - run: cargo test --release --locked

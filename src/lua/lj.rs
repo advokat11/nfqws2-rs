@@ -17,9 +17,9 @@
 
 use mlua::ffi;
 pub use mlua::ffi::{
-    lua_CFunction, lua_Debug, lua_Integer, lua_State, LUA_GCCOLLECT, LUA_GCCOUNT, LUA_GLOBALSINDEX,
-    LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET, LUA_MULTRET, LUA_NOREF,
-    LUA_REGISTRYINDEX, LUA_TBOOLEAN, LUA_TFUNCTION, LUA_TNIL, LUA_TNUMBER, LUA_TSTRING, LUA_TTABLE,
+    LUA_GCCOLLECT, LUA_GCCOUNT, LUA_GLOBALSINDEX, LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE,
+    LUA_MASKRET, LUA_MULTRET, LUA_NOREF, LUA_REGISTRYINDEX, LUA_TBOOLEAN, LUA_TFUNCTION, LUA_TNIL,
+    LUA_TNUMBER, LUA_TSTRING, LUA_TTABLE, lua_CFunction, lua_Debug, lua_Integer, lua_State,
 };
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -506,7 +506,7 @@ pub fn openlibs(l: L) {
 /// # Safety
 /// `l` and every copy of it must not be used afterwards.
 pub unsafe fn close(l: L) {
-    ffi::lua_close(l.as_ptr())
+    unsafe { ffi::lua_close(l.as_ptr()) }
 }
 pub fn atpanic(l: L, f: lua_CFunction) {
     // SAFETY: live state.

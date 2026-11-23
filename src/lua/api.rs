@@ -10,7 +10,7 @@ use super::{ctx_with, desync_ctx_check};
 use crate::crypto;
 use crate::darkmagic::*;
 use crate::helpers::*;
-use crate::params::{params, RECONSTRUCT_MAX_SIZE};
+use crate::params::{RECONSTRUCT_MAX_SIZE, params};
 use crate::protocol::*;
 use crate::{dlog, dlog_condup, dlog_err};
 use std::os::raw::c_int;
@@ -113,11 +113,7 @@ fn bitorxor(l: L, name: &str, xor: bool) -> R {
         let v = lj::checklint(l, i);
         range48(l, v);
         let v = (v & M48) as u64;
-        if xor {
-            sum ^= v
-        } else {
-            sum |= v
-        }
+        if xor { sum ^= v } else { sum |= v }
     }
     lj::pushlint(l, sum as i64);
     1
@@ -621,7 +617,12 @@ fn instance_cutoff(l: L) -> R {
         let (instance, dpn, ct) = ctx_with(|c| (c.instance.clone(), c.dp_n, c.ctrack.clone()));
         match ct {
             Some(ct) => {
-                dlog!("instance cutoff for '{}' in={} out={}\n", instance, bin as u8, bout as u8);
+                dlog!(
+                    "instance cutoff for '{}' in={} out={}\n",
+                    instance,
+                    bin as u8,
+                    bout as u8
+                );
                 let r = ct.borrow().lua_instance_cutoff;
                 lj::rawgeti(l, lj::LUA_REGISTRYINDEX, r as i64);
                 lj::getfield(l, -1, &instance);
@@ -708,8 +709,7 @@ fn execution_plan(l: L) -> R {
     lj::newtable(l);
     if let Some(dp) = dp {
         let dp = dp.borrow();
-        let mut n = 1u32;
-        for f in &dp.lua_desync {
+        for (n, f) in (1u32..).zip(dp.lua_desync.iter()) {
             if n > func_n {
                 let instance = desync_instance(&f.func, dp.n, n);
                 let range = if incoming { &f.range_in } else { &f.range_out };
@@ -728,12 +728,12 @@ fn execution_plan(l: L) -> R {
                     lj::rawset(l, -3);
                 } else {
                     for pl in 0..L7P_LAST {
-                        if f.payload_type & (1u64 << pl) != 0 {
-                            if let Some(s) = l7payload_str(pl) {
-                                lj::pushstr(l, s);
-                                lj::pushboolean(l, true);
-                                lj::rawset(l, -3);
-                            }
+                        if f.payload_type & (1u64 << pl) != 0
+                            && let Some(s) = l7payload_str(pl)
+                        {
+                            lj::pushstr(l, s);
+                            lj::pushboolean(l, true);
+                            lj::rawset(l, -3);
                         }
                     }
                 }
@@ -744,7 +744,6 @@ fn execution_plan(l: L) -> R {
                 }
                 lj::rawset(l, -3);
             }
-            n += 1;
         }
     }
     guard_leave!(l, g, 1);
@@ -1306,14 +1305,9 @@ fn tls_mod_(l: L) -> R {
 fn stat(l: L) -> R {
     check_argc(l, "stat", 1);
     let f = &lj::checkstring(l, 1)[..];
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    let path: &std::ffi::OsStr = std::os::unix::ffi::OsStrExt::from_bytes(
-        &f[..f.iter().position(|&x| x == 0).unwrap_or(f.len())],
-    );
-    let st = match std::fs::metadata(path) {
+    let st = match crate::sys::stat(f) {
         Ok(m) => m,
         Err(e) => {
-            let e = e.raw_os_error().unwrap_or(0);
             lj::pushnil(l);
             lj::pushstr(l, &crate::log::strerror(e));
             lj::pushinteger(l, e as i64);
@@ -1321,31 +1315,23 @@ fn stat(l: L) -> R {
         }
     };
     lj::createtable(l, 0, 5);
-    pushf_lint(l, "dev", st.dev() as i64);
-    pushf_lint(l, "inode", st.ino() as i64);
-    pushf_lint(l, "size", st.size() as i64);
+    pushf_lint(l, "dev", st.dev as i64);
+    pushf_lint(l, "inode", st.ino as i64);
+    pushf_lint(l, "size", st.size);
     pushf_number(
         l,
         "mtime",
-        st.mtime() as f64 + st.mtime_nsec() as f64 / 1000000000.,
+        st.mtime as f64 + st.mtime_nsec as f64 / 1000000000.,
     );
-    let ft = st.file_type();
-    let t = if ft.is_file() {
-        "file"
-    } else if ft.is_dir() {
-        "dir"
-    } else if ft.is_symlink() {
-        "symlink"
-    } else if ft.is_socket() {
-        "socket"
-    } else if ft.is_block_device() {
-        "blockdev"
-    } else if ft.is_char_device() {
-        "chardev"
-    } else if ft.is_fifo() {
-        "fifo"
-    } else {
-        "unknown"
+    let t = match st.mode & libc::S_IFMT {
+        libc::S_IFREG => "file",
+        libc::S_IFDIR => "dir",
+        libc::S_IFLNK => "symlink",
+        libc::S_IFSOCK => "socket",
+        libc::S_IFBLK => "blockdev",
+        libc::S_IFCHR => "chardev",
+        libc::S_IFIFO => "fifo",
+        _ => "unknown",
     };
     pushf_str(l, "type", Some(t.as_bytes()));
     1

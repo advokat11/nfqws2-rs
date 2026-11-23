@@ -273,10 +273,10 @@ pub fn daemonize() {
     } else if pid != 0 {
         std::process::exit(0);
     }
-    if let Some(c) = cwd {
-        if std::env::set_current_dir(c).is_err() {
-            dlog_perror("chdir");
-        }
+    if let Some(c) = cwd
+        && std::env::set_current_dir(c).is_err()
+    {
+        dlog_perror("chdir");
     }
     // SAFETY: setsid has no preconditions.
     if unsafe { libc::setsid() } == -1 {

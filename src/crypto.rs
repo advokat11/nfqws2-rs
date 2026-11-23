@@ -1,9 +1,9 @@
 //! Port of crypto/: AES block, AES-CTR, AES-GCM (non-verifying, like the C gcm_crypt_and_tag),
 //! SHA-224/256 and HKDF. Backed by RustCrypto primitives.
 
-use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
-use ghash::universal_hash::UniversalHash;
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use ghash::GHash;
+use ghash::universal_hash::UniversalHash;
 use sha2::{Digest, Sha224, Sha256};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -204,7 +204,9 @@ mod tests {
         // NIST GCM test case 3
         let key = hex("feffe9928665731c6d6a8f9467308308");
         let iv = hex("cafebabefacedbaddecaf888");
-        let pt = hex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255");
+        let pt = hex(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        );
         let (ct, tag) = aes_gcm(true, &key, &iv, &pt, &[]).unwrap();
         assert_eq!(tag.to_vec(), hex("4d5c2af327cd64a62cf35abd2ba6fab4"));
         let (pt2, tag2) = aes_gcm(false, &key, &iv, &ct, &[]).unwrap();

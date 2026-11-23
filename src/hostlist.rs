@@ -1,13 +1,13 @@
 //! Port of hostlist.c and ipset.c: list loading, reload checks, matching, registration.
 
 use crate::filter::{parse_cidr4, parse_cidr6};
-use crate::gzip::{is_gzip_file, z_readfile, Z_STREAM_END};
+use crate::gzip::{Z_STREAM_END, is_gzip_file, z_readfile};
 use crate::helpers::{file_mod_signature, file_open_test, file_size, ntop4, ntop6};
 use crate::log::{debug, dlog_perror};
-use crate::params::{params, DesyncProfile};
+use crate::params::{DesyncProfile, params};
 use crate::pools::{
-    hostlist_pool_add, HostlistCollection, HostlistFileRef, HostlistPool, IpSet, IpsetCollection,
-    IpsetFileRef, HOSTLIST_POOL_FLAG_EXCEMPT, HOSTLIST_POOL_FLAG_STRICT_MATCH,
+    HOSTLIST_POOL_FLAG_EXCEMPT, HOSTLIST_POOL_FLAG_STRICT_MATCH, HostlistCollection,
+    HostlistFileRef, HostlistPool, IpSet, IpsetCollection, IpsetFileRef, hostlist_pool_add,
 };
 use crate::{dlog, dlog_condup, dlog_err};
 use std::io::{BufRead, BufReader, Read};
@@ -341,11 +341,11 @@ pub fn register_hostlist(
     filename: Option<&str>,
     b_autolist: bool,
 ) -> Option<HostlistFileRef> {
-    if let Some(f) = filename {
-        if file_size(f).is_none() {
-            dlog_err!("cannot access hostlist file '{}'\n", f);
-            return None;
-        }
+    if let Some(f) = filename
+        && file_size(f).is_none()
+    {
+        dlog_err!("cannot access hostlist file '{}'\n", f);
+        return None;
     }
     let coll = if exclude {
         &mut dp.hl_collection_exclude
@@ -678,11 +678,11 @@ pub fn register_ipset(
     exclude: bool,
     filename: Option<&str>,
 ) -> Option<IpsetFileRef> {
-    if let Some(f) = filename {
-        if file_size(f).is_none() {
-            dlog_err!("cannot access ipset file '{}'\n", f);
-            return None;
-        }
+    if let Some(f) = filename
+        && file_size(f).is_none()
+    {
+        dlog_err!("cannot access ipset file '{}'\n", f);
+        return None;
     }
     let coll = if exclude {
         &mut dp.ips_collection_exclude

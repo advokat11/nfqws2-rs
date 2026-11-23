@@ -127,6 +127,10 @@ pub struct DesyncProfile {
     pub b_filter_l7: bool,
 }
 
+pub const FASTPATH_WORKAROUND_OFF: u8 = 0;
+pub const FASTPATH_WORKAROUND_ON: u8 = 1;
+pub const FASTPATH_WORKAROUND_AUTO: u8 = 2;
+
 pub type ProfileRef = Rc<RefCell<DesyncProfile>>;
 
 impl Default for DesyncProfile {
@@ -296,6 +300,10 @@ pub struct Params {
     pub ctrack_disable: bool,
     pub server: bool,
     pub filter_ssid_present: bool,
+    /// --fastpath-workaround (nfqws2-keenetic patch): 0 off, 1 on, 2 auto
+    pub fastpath_workaround: u8,
+    /// retransmissions during incomplete TLS reasm (process-wide, auto mode)
+    pub fastpath_retrans_count: std::cell::Cell<u8>,
     pub cache_hostname: bool,
     pub ipcache_lifetime: u32,
     pub ipcache: RefCell<IpCache>,
@@ -344,6 +352,8 @@ impl Default for Params {
             ctrack_disable: false,
             server: false,
             filter_ssid_present: false,
+            fastpath_workaround: FASTPATH_WORKAROUND_OFF,
+            fastpath_retrans_count: std::cell::Cell::new(0),
             cache_hostname: false,
             ipcache_lifetime: IPCACHE_LIFETIME,
             ipcache: RefCell::new(IpCache::default()),

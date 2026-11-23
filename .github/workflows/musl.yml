@@ -1,0 +1,52 @@
+# Static musl builds for routers, in the archive layout nfqws2-keenetic packages
+# (nfqws2-<arch>.tar.gz with binaries/linux-<arch>/nfqws2, lua/ in the arm64 archive).
+# A pushed tag v* attaches the archives to a GitHub release.
+name: musl
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, arm, mips64, mipselsf, mipssf, ppc, x86, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-multilib pigz
+      - name: Rust
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal -c rust-src && rustup default 1.100.0
+      - name: Build
+        run: musl/build.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfqws2-${{ matrix.arch }}
+          path: out/musl/nfqws2-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && sha256sum nfqws2-*.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "Static musl builds of nfqws2-rs for routers (nfqws2-keenetic archive layout)." \
+            nfqws2-*.tar.gz SHA256SUMS

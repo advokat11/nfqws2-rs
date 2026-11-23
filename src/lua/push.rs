@@ -3,23 +3,23 @@
 
 use super::lj::{self, L};
 use crate::checksum::{
-    icmp_fix_checksum, ip4_fix_checksum, tcp_fix_checksum, udp_fix_checksum, L3Addrs,
+    L3Addrs, icmp_fix_checksum, ip4_fix_checksum, tcp_fix_checksum, udp_fix_checksum,
 };
 use crate::conntrack::{Ctrack, CtrackPosition, CtrackPositions};
 use crate::darkmagic::*;
 use crate::dlog_err;
 use crate::filter::{PacketPos, PacketRange};
-use crate::helpers::{pntoh16, pntoh32, random, SockAddr};
+use crate::helpers::{SockAddr, pntoh16, pntoh32, random};
 use crate::pools::Str2;
 use crate::protocol::l7proto_str;
 
 macro_rules! guard_enter {
-    ($l:expr) => {
+    ($l:expr_2021) => {
         lj::gettop($l)
     };
 }
 macro_rules! guard_leave {
-    ($l:expr, $g:expr, $n:expr) => {
+    ($l:expr_2021, $g:expr_2021, $n:expr_2021) => {
         if $g + $n != lj::gettop($l) {
             lj::error($l, "stack guard failure");
         }
@@ -756,10 +756,10 @@ pub fn reconstruct_ip6hdr(
     }
     lj::pop(l, 1);
     let r = reconstruct_ip6exthdr(l, idx, buf, last_proto, preserve_next);
-    if let Some(len) = r {
-        if !have_plen {
-            buf[4..6].copy_from_slice(&((len - IP6_HDR_LEN) as u16).to_be_bytes());
-        }
+    if let Some(len) = r
+        && !have_plen
+    {
+        buf[4..6].copy_from_slice(&((len - IP6_HDR_LEN) as u16).to_be_bytes());
     }
     guard_leave!(l, g, 0);
     r
@@ -805,19 +805,18 @@ pub fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
     }
     let mut lopt = 0usize;
     lj::getfield(l, idx, "options");
-    if lj::typ(l, -1) == lj::LUA_TSTRING {
-        if let Some(p) = lj::tobytes(l, -1) {
-            if !p.is_empty() {
-                lopt = p.len();
-                if lopt > 40 || IP_HDR_LEN + ((lopt + 3) & !3) > buf.len() {
-                    return fail(l);
-                }
-                buf[IP_HDR_LEN..IP_HDR_LEN + lopt].copy_from_slice(&p);
-                let pad = (4 - (lopt & 3)) & 3;
-                buf[IP_HDR_LEN + lopt..IP_HDR_LEN + lopt + pad].fill(0);
-                lopt = (lopt + 3) & !3;
-            }
+    if lj::typ(l, -1) == lj::LUA_TSTRING
+        && let Some(p) = lj::tobytes(l, -1)
+        && !p.is_empty()
+    {
+        lopt = p.len();
+        if lopt > 40 || IP_HDR_LEN + ((lopt + 3) & !3) > buf.len() {
+            return fail(l);
         }
+        buf[IP_HDR_LEN..IP_HDR_LEN + lopt].copy_from_slice(&p);
+        let pad = (4 - (lopt & 3)) & 3;
+        buf[IP_HDR_LEN + lopt..IP_HDR_LEN + lopt + pad].fill(0);
+        lopt = (lopt + 3) & !3;
     }
     lj::pop(l, 1);
     let len = IP_HDR_LEN + lopt;
@@ -1065,8 +1064,8 @@ pub fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Opt
     let mut data = l3;
     left -= l3;
     lj::pop(l, 1);
-    let total;
-    if frag {
+
+    let total = if frag {
         lj::getfield(l, idx, "payload");
         if let Some(p) = lj::tobytes(l, -1) {
             if p.len() > 0xFFFF {
@@ -1074,14 +1073,18 @@ pub fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Opt
                 return err(l);
             }
             if left < p.len() {
-                dlog_err!("reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n", p.len(), left);
+                dlog_err!(
+                    "reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n",
+                    p.len(),
+                    left
+                );
                 return err(l);
             }
             buf[data..data + p.len()].copy_from_slice(&p);
             data += p.len();
         }
         lj::pop(l, 1);
-        total = data;
+        data
     } else {
         let (mut tcp, mut udp, mut icmp) = (None, None, None);
         let mut ln = 0usize;
@@ -1140,7 +1143,11 @@ pub fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Opt
                 return err(l);
             }
             if left < lpayload {
-                dlog_err!("reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n", lpayload, left);
+                dlog_err!(
+                    "reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n",
+                    lpayload,
+                    left
+                );
                 return err(l);
             }
             buf[data..data + lpayload].copy_from_slice(&p);
@@ -1234,8 +1241,8 @@ pub fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Opt
                 buf[4..6].copy_from_slice(&((len - IP6_HDR_LEN) as u16).to_be_bytes());
             }
         }
-        total = len;
-    }
+        len
+    };
     guard_leave!(l, g, 0);
     Some(total)
 }

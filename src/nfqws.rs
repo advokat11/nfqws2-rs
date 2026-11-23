@@ -6,7 +6,7 @@ use crate::desync::dpi_desync_packet;
 use crate::filter::*;
 use crate::helpers::*;
 use crate::hostlist::*;
-use crate::log::{debug, dlog_perror, LogTarget, LOG};
+use crate::log::{LOG, LogTarget, debug, dlog_perror};
 use crate::lua;
 use crate::params::*;
 use crate::pools::*;
@@ -50,7 +50,7 @@ struct WordExp {
     we_offs: usize,
 }
 
-extern "C" {
+unsafe extern "C" {
     static mut optarg: *mut c_char;
     fn getopt_long_only(
         argc: c_int,
@@ -71,7 +71,7 @@ struct NfqnlMsgPacketHdr {
 }
 type NfqCallback =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> c_int;
-extern "C" {
+unsafe extern "C" {
     fn nfq_open() -> *mut c_void;
     fn nfq_close(h: *mut c_void) -> c_int;
     fn nfq_unbind_pf(h: *mut c_void, pf: u16) -> c_int;
@@ -476,21 +476,21 @@ fn blob_debug() {
 fn test_list_files() -> bool {
     let p = params();
     for h in p.hostlists.borrow().0.iter() {
-        if let Some(f) = &h.borrow().filename {
-            if !file_open_test(f, libc::O_RDONLY) {
-                dlog_perror("file_open_test");
-                dlog_err!("cannot access hostlist file '{}'\n", f);
-                return false;
-            }
+        if let Some(f) = &h.borrow().filename
+            && !file_open_test(f, libc::O_RDONLY)
+        {
+            dlog_perror("file_open_test");
+            dlog_err!("cannot access hostlist file '{}'\n", f);
+            return false;
         }
     }
     for h in p.ipsets.borrow().0.iter() {
-        if let Some(f) = &h.borrow().filename {
-            if !file_open_test(f, libc::O_RDONLY) {
-                dlog_perror("file_open_test");
-                dlog_err!("cannot access ipset file '{}'\n", f);
-                return false;
-            }
+        if let Some(f) = &h.borrow().filename
+            && !file_open_test(f, libc::O_RDONLY)
+        {
+            dlog_perror("file_open_test");
+            dlog_err!("cannot access ipset file '{}'\n", f);
+            return false;
         }
     }
     true
@@ -625,11 +625,7 @@ fn fuzz_packet_data(count: u32) {
         if len > 0 {
             let b = packet[0];
             packet[0] = if b != 0 {
-                if b & 1 != 0 {
-                    0x40
-                } else {
-                    0x60 | (b & 0x0F)
-                }
+                if b & 1 != 0 { 0x40 } else { 0x60 | (b & 0x0F) }
             } else {
                 random() as u8
             };
@@ -674,10 +670,7 @@ fn no_intercept_loop() {
             let bt = boottime_ms();
             if bt_next > bt {
                 let d = bt_next - bt;
-                let ts = libc::timespec {
-                    tv_sec: (d / 1000) as _,
-                    tv_nsec: (d % 1000 * 1000000) as _,
-                };
+                let ts = crate::helpers::timespec((d / 1000) as i64, (d % 1000 * 1000000) as i64);
                 // SAFETY: valid timespec.
                 unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
                 if quit_requested() {
@@ -718,7 +711,7 @@ fn ifname_of(sock: i32, idx: u32) -> String {
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
     ifr.ifr_ifru.ifru_ifindex = idx as i32;
     // SAFETY: valid ifreq; SIOCGIFNAME fills ifr_name with a NUL-terminated name.
-    if unsafe { libc::ioctl(sock, libc::SIOCGIFNAME, &mut ifr) } < 0 {
+    if unsafe { libc::ioctl(sock, libc::SIOCGIFNAME as _, &mut ifr) } < 0 {
         dlog_perror("ioctl(SIOCGIFNAME)");
         return String::new();
     }
@@ -1022,8 +1015,7 @@ fn nfq_main() -> i32 {
                 return 0;
             }
             loop {
-                let res: i32;
-                if !p.timers.borrow().is_empty() {
+                let res: i32 = if !p.timers.borrow().is_empty() {
                     if bt_next == 0 {
                         bt_next = timer_pool_next();
                     }
@@ -1057,15 +1049,15 @@ fn nfq_main() -> i32 {
                         dlog_perror("select");
                         return 1;
                     }
-                    res = r;
+                    r
                 } else {
                     bt_next = 0;
                     if quit_requested() {
                         dlog_condup!("quit requested\n");
                         return 0;
                     }
-                    res = 1;
-                }
+                    1
+                };
                 lua::lua_do_gc();
                 reload_check();
                 if res != 0 {
@@ -1215,6 +1207,10 @@ const OPTS: &[OptDef] = &[
     OptDef {
         name: c"ipcache-hostname",
         has_arg: OPT,
+    },
+    OptDef {
+        name: c"fastpath-workaround",
+        has_arg: REQ,
     },
     OptDef {
         name: c"reasm-disable",
@@ -1726,6 +1722,17 @@ pub fn main() -> i32 {
                 }
             },
             "ipcache-hostname" => p.cache_hostname = oa.as_deref().is_none_or(|a| atoi_(a) != 0),
+            "fastpath-workaround" => {
+                p.fastpath_workaround = match oa.as_deref().unwrap_or("") {
+                    "0" => crate::params::FASTPATH_WORKAROUND_OFF,
+                    "1" => crate::params::FASTPATH_WORKAROUND_ON,
+                    "auto" => crate::params::FASTPATH_WORKAROUND_AUTO,
+                    v => {
+                        dlog_err!("invalid fastpath-workaround value : {}\n", v);
+                        exit_clean(1);
+                    }
+                }
+            }
             "payload-disable" => match &oa {
                 Some(a) => match parse_l7p_list(a) {
                     Some(v) => p.payload_disable = v,
@@ -1952,11 +1959,11 @@ pub fn main() -> i32 {
                 } else {
                     if b_template {
                         let nm = dp.borrow().name.clone();
-                        if let Some(nm) = &nm {
-                            if dp_list_search_name(&p.desync_templates.borrow(), nm).is_some() {
-                                dlog_err!("template '{}' already present\n", nm);
-                                exit_clean(1);
-                            }
+                        if let Some(nm) = &nm
+                            && dp_list_search_name(&p.desync_templates.borrow(), nm).is_some()
+                        {
+                            dlog_err!("template '{}' already present\n", nm);
+                            exit_clean(1);
                         }
                         template_count += 1;
                         dp.borrow_mut().n = template_count;
@@ -2181,11 +2188,11 @@ pub fn main() -> i32 {
         profile_count -= 1;
     } else if b_template {
         let nm = dp.borrow().name.clone();
-        if let Some(nm) = &nm {
-            if dp_list_search_name(&p.desync_templates.borrow(), nm).is_some() {
-                dlog_err!("template '{}' already present\n", nm);
-                exit_clean(1);
-            }
+        if let Some(nm) = &nm
+            && dp_list_search_name(&p.desync_templates.borrow(), nm).is_some()
+        {
+            dlog_err!("template '{}' already present\n", nm);
+            exit_clean(1);
         }
         template_count += 1;
         dp.borrow_mut().n = template_count;
@@ -2242,10 +2249,16 @@ pub fn main() -> i32 {
             )
         });
         if target == LogTarget::File && !ensure_file_access(&logfile, p.uid) {
-            dlog_err!("could not make '{}' accessible. log file may not be writable after privilege drop\n", logfile);
+            dlog_err!(
+                "could not make '{}' accessible. log file may not be writable after privilege drop\n",
+                logfile
+            );
         }
         if !ahdl.is_empty() && !ensure_file_access(&ahdl, p.uid) {
-            dlog_err!("could not make '{}' accessible. auto hostlist debug log may not be writable after privilege drop\n", ahdl);
+            dlog_err!(
+                "could not make '{}' accessible. auto hostlist debug log may not be writable after privilege drop\n",
+                ahdl
+            );
         }
     }
     let profiles = p.desync_profiles.borrow().clone();
@@ -2255,12 +2268,15 @@ pub fn main() -> i32 {
             dlog_err!("autohostlists not supported in server mode\n");
             exit_clean(1);
         }
-        if p.droproot {
-            if let Some(ha) = &d.hostlist_auto {
-                let f = ha.borrow().filename.clone().unwrap_or_default();
-                if !ensure_file_access(&f, p.uid) {
-                    dlog_err!("could not make '{}' accessible. auto hostlist file may not be writable after privilege drop\n", f);
-                }
+        if p.droproot
+            && let Some(ha) = &d.hostlist_auto
+        {
+            let f = ha.borrow().filename.clone().unwrap_or_default();
+            if !ensure_file_access(&f, p.uid) {
+                dlog_err!(
+                    "could not make '{}' accessible. auto hostlist file may not be writable after privilege drop\n",
+                    f
+                );
             }
         }
         if !filter_defaults(&mut d) {
@@ -2331,6 +2347,14 @@ pub fn main() -> i32 {
         );
     }
     dlog!("ipcache lifetime {}s\n", p.ipcache_lifetime);
+    dlog!(
+        "fastpath workaround {}\n",
+        match p.fastpath_workaround {
+            crate::params::FASTPATH_WORKAROUND_OFF => "0",
+            crate::params::FASTPATH_WORKAROUND_ON => "1",
+            _ => "auto",
+        }
+    );
     let r = nfq_main();
     lua::lua_shutdown();
     fflush_all();

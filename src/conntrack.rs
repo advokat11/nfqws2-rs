@@ -1,11 +1,11 @@
 //! Port of conntrack.c, conntrack_base.h and packet_queue.c.
 
 use crate::darkmagic::{
-    tcp_find_mss, tcp_find_scale_factor, tcp_syn_segment, tcp_synack_segment, Dissect, IPPROTO_IP,
-    IPPROTO_IPV6, IPPROTO_NONE, IPPROTO_TCP, IPPROTO_UDP, SCALE_NONE, TH_FIN, TH_RST,
+    Dissect, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_NONE, IPPROTO_TCP, IPPROTO_UDP, SCALE_NONE, TH_FIN,
+    TH_RST, tcp_find_mss, tcp_find_scale_factor, tcp_syn_segment, tcp_synack_segment,
 };
-use crate::helpers::{boottime, boottime_ts, ntop4, ntop6, pntoh16, pntoh32, SockAddr};
-use crate::protocol::{l7proto_str, L7P_UNKNOWN, L7_UNKNOWN};
+use crate::helpers::{SockAddr, boottime, boottime_ts, ntop4, ntop6, pntoh16, pntoh32};
+use crate::protocol::{L7_UNKNOWN, L7P_UNKNOWN, l7proto_str};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -56,10 +56,7 @@ pub struct CtrackPositions {
 impl Default for CtrackPositions {
     fn default() -> Self {
         CtrackPositions {
-            t_last: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
+            t_last: crate::helpers::timespec(0, 0),
             state: SYN,
             client: CtrackPosition::default(),
             server: CtrackPosition::default(),
@@ -268,10 +265,7 @@ impl Ctrack {
             b_check_done: false,
             b_check_result: false,
             b_check_excluded: false,
-            t_start: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
+            t_start: crate::helpers::timespec(0, 0),
             pos: CtrackPositions::default(),
             dp: None,
             dp_search_complete: false,
@@ -461,23 +455,29 @@ impl Conntrack {
         };
         let conn = extract_conn(pkt, dis, false)?;
         let swp = conn.swap();
-        let (t, rev) = if let Some(t) = self.pool.get(&conn).cloned() {
-            feed_packet(&mut t.borrow_mut(), false, pkt, dis);
-            (t, false)
-        } else if let Some(t) = self.pool.get(&swp).cloned() {
-            feed_packet(&mut t.borrow_mut(), true, pkt, dis);
-            (t, true)
-        } else {
-            let tcp = dis.tcp.map(|o| &pkt[o..]);
-            let b_rev = tcp.is_some_and(tcp_synack_segment);
-            if tcp.is_some_and(tcp_syn_segment) || b_rev || dis.udp.is_some() {
-                let t = Rc::new(RefCell::new(Ctrack::new()));
-                self.pool.insert(if b_rev { swp } else { conn }, t.clone());
-                feed_packet(&mut t.borrow_mut(), b_rev, pkt, dis);
-                (t, b_rev)
-            } else {
-                return None;
+        let (t, rev) = match self.pool.get(&conn).cloned() {
+            Some(t) => {
+                feed_packet(&mut t.borrow_mut(), false, pkt, dis);
+                (t, false)
             }
+            _ => match self.pool.get(&swp).cloned() {
+                Some(t) => {
+                    feed_packet(&mut t.borrow_mut(), true, pkt, dis);
+                    (t, true)
+                }
+                _ => {
+                    let tcp = dis.tcp.map(|o| &pkt[o..]);
+                    let b_rev = tcp.is_some_and(tcp_synack_segment);
+                    if tcp.is_some_and(tcp_syn_segment) || b_rev || dis.udp.is_some() {
+                        let t = Rc::new(RefCell::new(Ctrack::new()));
+                        self.pool.insert(if b_rev { swp } else { conn }, t.clone());
+                        feed_packet(&mut t.borrow_mut(), b_rev, pkt, dis);
+                        (t, b_rev)
+                    } else {
+                        return None;
+                    }
+                }
+            },
         };
         t.borrow_mut().pos.ipproto = proto;
         Some((t, rev))
@@ -536,7 +536,11 @@ impl Conntrack {
                 c.sport,
                 c.addr_str(&c.dst),
                 c.dport,
-                if c.l4proto == IPPROTO_TCP { connstate_str(p.state) } else { "-" },
+                if c.l4proto == IPPROTO_TCP {
+                    connstate_str(p.state)
+                } else {
+                    "-"
+                },
                 t.t_start.tv_sec as u64,
                 (p.t_last.tv_sec - t.t_start.tv_sec) as u64,
                 (tnow - p.t_last.tv_sec as i64) as u64,
@@ -575,7 +579,10 @@ impl Conntrack {
                 t.b_cutoff as u8,
                 t.b_lua_in_cutoff as u8,
                 t.b_lua_out_cutoff as u8,
-                t.hostname.as_deref().map(String::from_utf8_lossy).unwrap_or_default(),
+                t.hostname
+                    .as_deref()
+                    .map(String::from_utf8_lossy)
+                    .unwrap_or_default(),
                 l7proto_str(t.l7proto).unwrap_or("(null)")
             );
         }

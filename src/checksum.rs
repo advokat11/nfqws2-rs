@@ -9,11 +9,11 @@ pub const IPPROTO_ICMPV6: u8 = 58;
 /// One's complement sum of 16-bit big-endian words, not inverted, folded to 16 bits.
 pub fn csum_partial(buf: &[u8]) -> u16 {
     let mut sum: u64 = 0;
-    let mut chunks = buf.chunks_exact(2);
-    for c in &mut chunks {
-        sum += u16::from_be_bytes([c[0], c[1]]) as u64;
+    let (words, rest) = buf.as_chunks::<2>();
+    for c in words {
+        sum += u16::from_be_bytes(*c) as u64;
     }
-    if let [b] = chunks.remainder() {
+    if let [b] = rest {
         sum += (*b as u64) << 8;
     }
     fold(sum)
@@ -28,7 +28,7 @@ fn fold(mut x: u64) -> u16 {
 
 fn pseudo_sum(src: &[u8], dst: &[u8], len: usize, proto: u8) -> u64 {
     let mut s: u64 = 0;
-    for c in src.chunks_exact(2).chain(dst.chunks_exact(2)) {
+    for c in src.as_chunks::<2>().0.iter().chain(dst.as_chunks::<2>().0) {
         s += u16::from_be_bytes([c[0], c[1]]) as u64;
     }
     let l = (len as u32).wrapping_add(proto as u32);

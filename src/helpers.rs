@@ -352,6 +352,8 @@ pub fn hex_digit(v: u8) -> u8 {
     }
 }
 
+// libc marks time_t deprecated on musl targets (its width depends on the musl version)
+#[allow(deprecated)]
 pub fn localtime_str() -> String {
     // SAFETY: plain libc calls with valid out-pointers.
     unsafe {
@@ -379,17 +381,18 @@ pub struct FileModSig {
 }
 
 pub fn file_mod_signature(filename: &str) -> Option<FileModSig> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(filename).ok()?;
+    let m = crate::sys::stat(filename.as_bytes()).ok()?;
     Some(FileModSig {
-        sec: m.mtime(),
-        nsec: m.mtime_nsec(),
-        size: m.size() as i64,
+        sec: m.mtime,
+        nsec: m.mtime_nsec,
+        size: m.size,
     })
 }
 
 pub fn file_size(filename: &str) -> Option<u64> {
-    std::fs::metadata(filename).ok().map(|m| m.len())
+    crate::sys::stat(filename.as_bytes())
+        .ok()
+        .map(|m| m.size as u64)
 }
 
 pub fn file_open_test(filename: &str, flags: i32) -> bool {
@@ -432,7 +435,8 @@ pub fn fill_random_bytes(p: &mut [u8]) {
     }
     let mut k = 0;
     while k + 1 < sz {
-        let r = (random() as u16).to_le_bytes();
+        // C stores the value as a native-endian uint16_t
+        let r = (random() as u16).to_ne_bytes();
         p[off + k] = r[0];
         p[off + k + 1] = r[1];
         k += 2;
@@ -510,7 +514,8 @@ pub fn set_env_exedir(argv0: &str) -> bool {
         _ => std::path::PathBuf::from("."),
     };
     let d = std::fs::canonicalize(&d).unwrap_or(d);
-    std::env::set_var("EXEDIR", d);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("EXEDIR", d) };
     true
 }
 
@@ -573,11 +578,19 @@ pub fn parse_int16(p: &str) -> Option<i16> {
     }
 }
 
+/// A timespec. On 32-bit musl with 64-bit time_t libc adds private padding fields, so it
+/// cannot be built with a struct literal.
+#[allow(clippy::unnecessary_cast)]
+pub fn timespec(sec: i64, nsec: i64) -> libc::timespec {
+    // SAFETY: timespec is plain data; all-zero is a valid value.
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    ts.tv_sec = sec as _;
+    ts.tv_nsec = nsec as _;
+    ts
+}
+
 fn clock(clk: libc::clockid_t) -> Option<libc::timespec> {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
+    let mut ts = timespec(0, 0);
     // SAFETY: valid out-pointer.
     (unsafe { libc::clock_gettime(clk, &mut ts) } == 0).then_some(ts)
 }
@@ -591,10 +604,7 @@ pub fn boottime_ms() -> u64 {
 }
 
 pub fn boottime_ts() -> libc::timespec {
-    clock(libc::CLOCK_BOOTTIME).unwrap_or(libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    })
+    clock(libc::CLOCK_BOOTTIME).unwrap_or(timespec(0, 0))
 }
 
 pub fn realtime() -> Option<libc::timespec> {

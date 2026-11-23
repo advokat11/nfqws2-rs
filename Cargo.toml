@@ -1,8 +1,8 @@
 [package]
 name = "nfqws2"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.88"
+edition = "2024"
+rust-version = "1.100"
 description = "Rust port of zapret2 nfq2 (nfqws2), Linux NFQUEUE target"
 license = "MIT"
 
@@ -16,7 +16,6 @@ indexmap = "2"
 mlua = { version = "0.10", features = ["luajit"] }
 flate2 = { version = "1", default-features = false, features = ["zlib"] }
 aes = "0.8"
-ctr = "0.9"
 ghash = "0.5"
 libz-sys = { version = "1", default-features = false, features = ["libc"] }
 sha2 = "0.10"

@@ -9,9 +9,9 @@ pub mod zlib;
 
 use crate::conntrack::CtrackRef;
 use crate::darkmagic::*;
-use crate::gzip::{is_gzip_bytes, z_readfile, Z_STREAM_END};
+use crate::gzip::{Z_STREAM_END, is_gzip_bytes, z_readfile};
 use crate::helpers::boottime_ms;
-use crate::params::{params, ProfileRef, DEFAULT_MSS, LUA_COMPAT_VER};
+use crate::params::{DEFAULT_MSS, LUA_COMPAT_VER, ProfileRef, params};
 use crate::{dlog, dlog_condup, dlog_err};
 use lj::L;
 use push::{guard_enter, guard_leave};
@@ -428,15 +428,17 @@ fn file_open_test(filename: &str) -> Option<(bool, String)> {
 
 pub fn lua_test_init_script_files() -> bool {
     for s in &params().lua_init_scripts {
-        if let Some(f) = s.strip_prefix('@') {
-            if file_open_test(f).is_none() {
-                let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                dlog_err!("LUA file '{}' or '{}.gz' not accessible\n", f, f);
-                if e == libc::EACCES {
-                    dlog_err!("I drop my privileges and do not run Lua as root\ncheck file permissions and +x rights on all directories in the path\n");
-                }
-                return false;
+        if let Some(f) = s.strip_prefix('@')
+            && file_open_test(f).is_none()
+        {
+            let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            dlog_err!("LUA file '{}' or '{}.gz' not accessible\n", f, f);
+            if e == libc::EACCES {
+                dlog_err!(
+                    "I drop my privileges and do not run Lua as root\ncheck file permissions and +x rights on all directories in the path\n"
+                );
             }
+            return false;
         }
     }
     true

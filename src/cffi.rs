@@ -3,14 +3,14 @@
 
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 
-extern "C" {
+unsafe extern "C" {
     pub fn inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int;
     pub fn inet_ntop(af: c_int, src: *const c_void, dst: *mut c_char, size: u32) -> *const c_char;
     pub fn random() -> c_long;
     pub fn srandom(seed: c_uint);
 }
 
-extern "C" {
+unsafe extern "C" {
     pub static mut stdout: *mut libc::FILE;
     pub static mut stderr: *mut libc::FILE;
 }

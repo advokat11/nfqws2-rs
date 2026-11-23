@@ -83,3 +83,16 @@ Decision: Follow what the C build does on each target:
 - Messages the C code formats with `%d`/`%u` are raised with the same `luaL_error` format and arguments: LuaJIT reserves extra room for numbers in its string buffer, which is part of the Lua heap.
 - `--fuzz` draws ifin/ifout inside one C argument list; gcc evaluates it right to left on x86, left to right on aarch64 and mips, so the port draws in that order per target.
 Consequences: Verified on x86-64 (native) and on aarch64 and mipsel under qemu-user against C builds for those targets. Under qemu the seccomp filter cannot be installed (qemu-user rejects it) in either build.
+
+## ADR-013: nfqws2-keenetic compatibility
+Status: accepted (2026-11-23)
+Context: nfqws2-keenetic (the Keenetic/OpenWrt packaging of nfqws2) builds zapret2 with its own patch, which adds `--fastpath-workaround=0|1|auto` and which its init script always passes, and ships static musl binaries for seven architectures, soft-float on MIPS.
+Decision: Port the patch as part of the C contract (option parsing, help line, the `fastpath workaround` debug line, retransmission handling during incomplete TLS reassembly, ACK-only placeholders). Build static musl binaries with the same toolchains (bol-van/musl-cross), library versions and flags (OpenResty luajit2 with FFI disabled, libmnl, libnfnetlink, libnetfilter_queue, zlib), linked non-PIE against the toolchain's libc, with 64-bit `time_t` on 32-bit musl. MIPS targets use nightly `-Zbuild-std` with the MIPS32 baseline (Rust's targets default to MIPS32r2). Mirror lua.c's ` OpenResty` suffix in the LuaJIT banner. Target-specific fixes the musl builds exposed: random bytes are stored native-endian like C's `*(uint16_t*)` (mips big-endian); socket option numbers come from the target's `<sys/socket.h>` via build.rs, because libc 0.2.191 applies the MIPS values to 32-bit MIPS only; `stat(2)` goes through libc, because `std::fs::metadata` returns a wrong size and mtime on mips64 musl; mips64 is built position-independent (non-PIC code above 4 GiB truncated addresses); ppc test builds are static with the determinism shim linked in, since LuaJIT's PowerPC VM forces bss-plt, which musl's dynamic loader rejects.
+Consequences: Dependencies are built without `-flto` (libz-sys detects zlib by linking a test program, which fails against LTO-only archives); x86 uses LuaJIT instead of PUC Lua 5.5 and needs SSE2. Verified per target under qemu-user against the C original built the same way (the runner adds `--uid=0:0` first, since the build host is an LXC container where the default privilege drop fails, for both programs).
+
+## ADR-014: Rust 1.100, edition 2024
+Status: accepted (2026-11-23)
+Context: The port started on Rust 1.88 and edition 2021.
+Decision: Require Rust 1.100 and edition 2024. Apply the edition migration and the newer clippy suggestions (let chains, `as_chunks`, `is_multiple_of`). Tier-3 targets (MIPS, PowerPC) build std from source with the same pinned toolchain and `RUSTC_BOOTSTRAP=1`, not a nightly: a 2026-11 nightly did not sign-extend 32-bit C arguments on mips64.
+Consequences: Edition 2024 drops temporaries in tail expressions and `if let` scrutinees earlier; the three places this touches only release `RefCell` borrows or a `File` sooner. All targets were re-verified after the switch.
+

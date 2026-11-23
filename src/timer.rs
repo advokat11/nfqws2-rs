@@ -73,8 +73,8 @@ impl TimerPool {
 pub fn timer_pool_next() -> u64 {
     let p = params();
     p.timers_dirty.set(false);
-    let n = p.timers.borrow().next();
-    n
+
+    p.timers.borrow().next()
 }
 
 /// TimerPoolRun: fire due timers. Lua callbacks may add/delete timers (they set timers_dirty).

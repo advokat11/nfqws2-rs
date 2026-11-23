@@ -2,6 +2,8 @@ fn main() {
     // Same system libraries as the C original (ADR-007/009).
     println!("cargo:rustc-link-lib=netfilter_queue");
     println!("cargo:rustc-link-lib=nfnetlink");
+    // libnetfilter_queue uses libmnl; a static link needs it named (the C Makefile has -lmnl)
+    println!("cargo:rustc-link-lib=mnl");
     let now = std::process::Command::new("date")
         .arg("+%b %e %Y %H:%M:%S")
         .output()
@@ -38,8 +40,21 @@ fn main() {
                 .and_then(|l| l.split('"').nth(1).map(str::to_string))
         })
         .unwrap_or_default();
+    // lua.c appends LJSUBVER: " OpenResty" when luajit.h defines OPENRESTY_LUAJIT
+    let openresty = std::fs::read_to_string(format!("{ljinc}/luajit.h"))
+        .map(|h| {
+            h.lines()
+                .any(|l| l.trim_start().starts_with("#define OPENRESTY_LUAJIT"))
+        })
+        .unwrap_or(false);
+    let ljv = if openresty {
+        format!("{ljv} OpenResty")
+    } else {
+        ljv
+    };
     println!("cargo:rustc-env=NFQWS2_LUAJIT_VERSION={ljv}");
     seccomp_tables();
+    socket_consts();
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -308,6 +323,47 @@ fn seccomp_tables() {
         list.join(", ")
     );
     std::fs::write(out.join("seccomp.rs"), rs).expect("write seccomp.rs");
+}
+
+/// Socket option numbers from the target's <sys/socket.h>. They differ on MIPS, and the libc
+/// crate gets them wrong for mips64 (it applies the MIPS values to 32-bit MIPS only).
+fn socket_consts() {
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let names = [
+        "SOL_SOCKET",
+        "SO_RCVBUF",
+        "SO_SNDBUF",
+        "SO_PRIORITY",
+        "SO_MARK",
+        "SO_BINDTODEVICE",
+    ];
+    let mut c = String::from("#include <sys/socket.h>\n");
+    for n in names {
+        c += &format!("NFQ_{n} {n} NFQ_END\n");
+    }
+    let probe = out.join("socket_probe.c");
+    std::fs::write(&probe, c).expect("write probe");
+    let pp = cc::Build::new()
+        .file(&probe)
+        .cargo_metadata(false)
+        .cargo_warnings(false)
+        .expand();
+    let pp: String = String::from_utf8_lossy(&pp)
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut rs = String::new();
+    for n in names {
+        let tag = format!("NFQ_{n} ");
+        let v = pp
+            .split("NFQ_END")
+            .find_map(|i| i.find(&tag).map(|p| i[p + tag.len()..].trim().to_string()))
+            .and_then(|e| eval(&e))
+            .unwrap_or_else(|| panic!("socket probe: cannot evaluate {n}"));
+        rs += &format!("pub const {n}: std::os::raw::c_int = {v};\n");
+    }
+    std::fs::write(out.join("socket_consts.rs"), rs).expect("write socket_consts.rs");
 }
 
 /// Evaluate the integer constant expressions the kernel headers use in syscall and audit

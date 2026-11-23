@@ -4,10 +4,10 @@
 //! BSD LIST_INSERT_HEAD lists are Vecs with the head at index 0.
 
 use crate::filter::{
-    icf_match, icf_parse, ipp_match, ipp_parse, pf_match, pf_parse, str_cidr4, str_cidr6, Cidr4,
-    Cidr6, IcmpFilter, IppFilter, PacketRange, PortFilter, PACKET_RANGE_ALWAYS,
+    Cidr4, Cidr6, IcmpFilter, IppFilter, PACKET_RANGE_ALWAYS, PacketRange, PortFilter, icf_match,
+    icf_parse, ipp_match, ipp_parse, pf_match, pf_parse, str_cidr4, str_cidr6,
 };
-use crate::helpers::{boottime, expand_bits, FileModSig};
+use crate::helpers::{FileModSig, boottime, expand_bits};
 use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -342,10 +342,10 @@ impl PortFilters {
         self.0.is_empty() || self.0.iter().any(|pf| pf_match(port, pf))
     }
     pub fn deny_if_empty(&mut self) -> bool {
-        if self.0.is_empty() {
-            if let Some(pf) = pf_parse("0") {
-                self.add(pf);
-            }
+        if self.0.is_empty()
+            && let Some(pf) = pf_parse("0")
+        {
+            self.add(pf);
         }
         true
     }
@@ -361,10 +361,10 @@ impl IcmpFilters {
         self.0.is_empty() || self.0.iter().any(|f| icf_match(t, c, f))
     }
     pub fn deny_if_empty(&mut self) -> bool {
-        if self.0.is_empty() {
-            if let Some(f) = icf_parse("-") {
-                self.add(f);
-            }
+        if self.0.is_empty()
+            && let Some(f) = icf_parse("-")
+        {
+            self.add(f);
         }
         true
     }
@@ -380,10 +380,10 @@ impl IppFilters {
         self.0.is_empty() || self.0.iter().any(|f| ipp_match(p, f))
     }
     pub fn deny_if_empty(&mut self) -> bool {
-        if self.0.is_empty() {
-            if let Some(f) = ipp_parse("-") {
-                self.add(f);
-            }
+        if self.0.is_empty()
+            && let Some(f) = ipp_parse("-")
+        {
+            self.add(f);
         }
         true
     }
@@ -474,15 +474,14 @@ impl IpCache {
                     last: now,
                     ..Default::default()
                 })
-        } else if let Some(a) = a6 {
+        } else {
+            let a = a6?;
             self.c6
                 .entry((*a, iface_key(iface)))
                 .or_insert_with(|| IpCacheItem {
                     last: now,
                     ..Default::default()
                 })
-        } else {
-            return None;
         };
         item.last = now;
         Some(item)

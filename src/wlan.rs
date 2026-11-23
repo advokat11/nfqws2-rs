@@ -94,7 +94,7 @@ fn put_attr(buf: &mut Vec<u8>, typ: u16, data: &[u8]) {
     buf.extend_from_slice(&(len as u16).to_ne_bytes());
     buf.extend_from_slice(&typ.to_ne_bytes());
     buf.extend_from_slice(data);
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -246,11 +246,7 @@ fn get_family_id(sock: i32) -> u16 {
             })
         },
     );
-    if ok {
-        id
-    } else {
-        0
-    }
+    if ok { id } else { 0 }
 }
 
 fn cstr_bytes(p: &[u8]) -> &[u8] {
@@ -378,11 +374,11 @@ fn scan_info(sock: i32, fam: u16, out: &mut Vec<WlanInterface>) -> bool {
                             });
                             if ok {
                                 for n in &nested {
-                                    if n.typ == NL80211_BSS_INFORMATION_ELEMENTS {
-                                        if let Some(ie) = find_ie(n.payload, 0) {
-                                            let l = (ie[1] as usize).min(32);
-                                            w.ssid = cstr_bytes(&ie[2..2 + l]).to_vec();
-                                        }
+                                    if n.typ == NL80211_BSS_INFORMATION_ELEMENTS
+                                        && let Some(ie) = find_ie(n.payload, 0)
+                                    {
+                                        let l = (ie[1] as usize).min(32);
+                                        w.ssid = cstr_bytes(&ie[2..2 + l]).to_vec();
                                     }
                                 }
                             }

@@ -20,6 +20,7 @@
  --server=[0|1]						; change multiple aspects of src/dst ip/port handling for incoming connections
  --ipcache-lifetime=<int>				; time in seconds to keep cached hop count and domain name (default 7200). 0 = no expiration
  --ipcache-hostname=[0|1]				; 1 or no argument enables ip->hostname caching
+ --fastpath-workaround=0|1|auto			; hardware fastpath workaround for TLS reassembly (default : 0)
  --reasm-disable=[type[,type]]				; disable reasm for these L7 payloads : tls_client_hello quic_initial . if no argument - disable all reasm.
 
 DESYNC ENGINE INIT:
