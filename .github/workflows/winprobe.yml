@@ -34,7 +34,7 @@ jobs:
           wget -qO fp.patch https://raw.githubusercontent.com/nfqws/nfqws2-keenetic/master/patches/001-tls-reasm-fastpath.patch &&
           patch -p1 -d z < fp.patch &&
           make -C z/nfq2 cygwin &&
-          ls -la z/nfq2/winws2.exe && cp /usr/bin/cygwin1.dll z/nfq2/ &&
+          ls -la z/nfq2/winws2.exe &&
           wget -qO wd.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip &&
           unzip -qj wd.zip "*/x64/WinDivert.dll" "*/x64/WinDivert64.sys" -d z/nfq2 &&
           true
@@ -47,7 +47,7 @@ jobs:
           ./winws2.exe --dry-run --wf-tcp-out=443 --debug=1 2>&1 | tail -4; echo "dry rc=$?"
           timeout 20 ./winws2.exe --wf-tcp-out=443 --intercept=0 --debug=1 > o1.txt 2>&1; echo "intercept0 rc=$?"; tail -8 o1.txt
           timeout 60 ./winws2.exe --wf-tcp-out=443 --fuzz=200 --debug=1 --lua-init=@../lua/zapret-lib.lua > o2.txt 2>&1; echo "fuzz rc=$?"; tail -5 o2.txt
-          strace ./winws2.exe --version 2>&1 | grep -iE "exit|status|error" | head -10
+          ./winws2.exe --wf-tcp-out=443 --wf-l3=ipv4 --wf-filter-lan=0 --wf-save=f2.txt; cat f2.txt
       - name: winws2 from PowerShell
         shell: pwsh
         run: |
