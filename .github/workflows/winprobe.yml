@@ -55,7 +55,7 @@ jobs:
           # for Command::current_dir with posix_spawn, which the program never does
           Set-Content stub.c '#include <errno.h>
           int posix_spawn_file_actions_addchdir_np(void *a, const char *p) { (void)a; (void)p; return ENOSYS; }'
-          C:\cygwinin\gcc.exe -c -O2 -o stub.o stub.c
+          C:\cygwin\bin\gcc.exe -c -O2 -o stub.o stub.c
           $env:CARGO_TARGET_X86_64_PC_CYGWIN_RUSTFLAGS = "-C link-arg=$((Get-Location).Path)\stub.o"
           $env:CARGO_TARGET_X86_64_PC_CYGWIN_LINKER = "C:\cygwin\bin\gcc.exe"
           cargo +1.100.0 build --release --target x86_64-pc-cygwin '-Zbuild-std=std,panic_abort' 2>&1 | Select-Object -Last 25
