@@ -507,7 +507,7 @@ impl Conntrack {
             );
             self.pool.retain(|c, t| {
                 let t = t.borrow();
-                let tidle = tnow - t.pos.t_last.tv_sec;
+                let tidle = tnow - t.pos.t_last.tv_sec as i64;
                 let del = t.b_cutoff
                     || (c.l4proto == IPPROTO_TCP
                         && ((t.pos.state == SYN && tidle >= syn)
@@ -539,7 +539,7 @@ impl Conntrack {
                 if c.l4proto == IPPROTO_TCP { connstate_str(p.state) } else { "-" },
                 t.t_start.tv_sec as u64,
                 (p.t_last.tv_sec - t.t_start.tv_sec) as u64,
-                (tnow - p.t_last.tv_sec) as u64,
+                (tnow - p.t_last.tv_sec as i64) as u64,
                 p.client.pdcounter,
                 p.client.pcounter,
                 p.client.pbcounter,

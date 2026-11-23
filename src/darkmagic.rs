@@ -631,40 +631,19 @@ fn sockaddr_bytes(sa: &SockAddr) -> (Vec<u8>, libc::socklen_t) {
 }
 
 fn get_source_ip(target: &SockAddr) -> Option<SockAddr> {
-    let fam = if target.is_v4() {
-        libc::AF_INET
-    } else {
-        libc::AF_INET6
-    };
-    let t = match target {
-        SockAddr::V4(a, _) => SockAddr::V4(*a, 0xFFFF),
-        SockAddr::V6(a, _) => SockAddr::V6(*a, 0xFFFF),
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+    // Same as the C code: a datagram socket "connected" to target port 0xFFFF tells which
+    // local address the kernel routes from. No packet is sent.
+    let (any, dst): (IpAddr, IpAddr) = match target {
+        SockAddr::V4(a, _) => (Ipv4Addr::UNSPECIFIED.into(), Ipv4Addr::from(*a).into()),
+        SockAddr::V6(a, _) => (Ipv6Addr::UNSPECIFIED.into(), Ipv6Addr::from(*a).into()),
         SockAddr::None => return None,
     };
-    // C stores 0xFFFF into sin_port unconverted; byte-symmetric so to_be is identical.
-    let (sa, salen) = sockaddr_bytes(&t);
-    // SAFETY: standard socket calls with correctly sized buffers.
-    unsafe {
-        let s = libc::socket(fam, libc::SOCK_DGRAM, 0);
-        if s < 0 {
-            return None;
-        }
-        let mut res = None;
-        if libc::connect(s, sa.as_ptr() as *const libc::sockaddr, salen) == 0 {
-            let mut name: libc::sockaddr_storage = std::mem::zeroed();
-            let mut nl = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-            if libc::getsockname(s, &mut name as *mut _ as *mut libc::sockaddr, &mut nl) == 0 {
-                res = Some(if fam == libc::AF_INET {
-                    let n = &*(&name as *const _ as *const libc::sockaddr_in);
-                    SockAddr::V4(n.sin_addr.s_addr.to_ne_bytes(), 0)
-                } else {
-                    let n = &*(&name as *const _ as *const libc::sockaddr_in6);
-                    SockAddr::V6(n.sin6_addr.s6_addr, 0)
-                });
-            }
-        }
-        libc::close(s);
-        res
+    let s = UdpSocket::bind(SocketAddr::new(any, 0)).ok()?;
+    s.connect(SocketAddr::new(dst, 0xFFFF)).ok()?;
+    match s.local_addr().ok()?.ip() {
+        IpAddr::V4(a) => Some(SockAddr::V4(a.octets(), 0)),
+        IpAddr::V6(a) => Some(SockAddr::V6(a.octets(), 0)),
     }
 }
 pub fn get_source_ip4(t: &[u8; 4]) -> Option<[u8; 4]> {

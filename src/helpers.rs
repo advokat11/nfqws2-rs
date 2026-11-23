@@ -583,7 +583,7 @@ fn clock(clk: libc::clockid_t) -> Option<libc::timespec> {
 }
 
 pub fn boottime() -> i64 {
-    clock(libc::CLOCK_BOOTTIME).map_or(0, |t| t.tv_sec)
+    clock(libc::CLOCK_BOOTTIME).map_or(0, |t| t.tv_sec as i64)
 }
 
 pub fn boottime_ms() -> u64 {
@@ -603,7 +603,7 @@ pub fn realtime() -> Option<libc::timespec> {
 
 pub fn time_now() -> i64 {
     // SAFETY: NULL is allowed.
-    unsafe { libc::time(std::ptr::null_mut()) }
+    unsafe { libc::time(std::ptr::null_mut()) as i64 }
 }
 
 /// sscanf "%u" semantics on glibc/LP64: skips whitespace, optional sign, decimal digits.

@@ -49,6 +49,28 @@ docker build -t nfqws2-rs .
 docker run --rm -v "$PWD/out":/out nfqws2-rs
 ```
 
+### Other architectures
+
+`cross/build.sh aarch64` and `cross/build.sh mipsel` cross-compile in Docker (Debian 12
+toolchains; mipsel is a tier-3 Rust target and uses nightly `-Zbuild-std`). The binary is
+`target/<triple>/release/nfqws2` and needs the target's LuaJIT, zlib and
+libnetfilter_queue, like the C build.
+
+Each target was compared with the C original built for the same target (aarch64 and mipsel
+under qemu-user):
+
+| target | corpus (121 cases) |
+|---|---|
+| x86_64 | 121/121 identical |
+| aarch64 | 121/121 identical |
+| mipsel | 119/121 identical |
+
+The two mipsel differences are not in the port. `blobs`: the C code prints a 64-bit offset
+with `%zu`, which shows garbage on 32-bit targets (the port prints the real offset).
+`lua-shipped`: LuaJIT's math is broken under qemu-mipsel (`math.floor(3.5)` returns 3.5
+even in plain `luajit`), so the random-based test diverges; it needs real MIPS hardware.
+Architecture-specific behavior of the C code that the port follows is listed in ADR-012.
+
 ## Usage
 
 Exactly as the original `nfqws2`; see `nfqws2 --help` and the
@@ -66,8 +88,11 @@ nfqws2 --qnum=200 \
 
 One crate, one module per C source file of the original (`desync.c` → `src/desync.rs`,
 `lua.c` → `src/lua/`, …). The Lua bindings use the raw LuaJIT C API through `mlua::ffi`,
-because scripts can observe exact error strings and table construction; that module is the
-crate's main `unsafe` surface.
+because scripts can observe exact error strings and table construction. All of that goes
+through `src/lua/lj.rs`, a small checked layer (stack indices validated, stack space
+reserved, strings copied out), so the bindings themselves are safe Rust. The remaining
+`unsafe` is thin wrappers around libc, libnetfilter_queue and zlib calls (about 3% of the
+code lines).
 
 ## License
 

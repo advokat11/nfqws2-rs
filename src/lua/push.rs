@@ -27,38 +27,47 @@ macro_rules! guard_leave {
 }
 pub(crate) use {guard_enter, guard_leave};
 
-pub unsafe fn pushf_nil(l: L, f: &str) {
+pub fn pushf_nil(l: L, f: &str) {
     lj::pushstr(l, f);
     lj::pushnil(l);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_int(l: L, f: &str, v: i64) {
+/// lua_pushf_int: the value is a lua_Integer (32-bit on 32-bit targets), pushed with
+/// lua_pushlint.
+pub fn pushf_int(l: L, f: &str, v: i64) {
     lj::pushstr(l, f);
-    lj::pushinteger(l, v);
+    lj::pushlint(l, v as lj::lua_Integer as i64);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushi_int(l: L, i: i64, v: i64) {
+/// lua_pushf_lint: a full 64-bit value.
+pub fn pushf_lint(l: L, f: &str, v: i64) {
+    lj::pushstr(l, f);
+    lj::pushlint(l, v);
+    lj::rawset(l, -3);
+}
+/// lua_pushi_int
+pub fn pushi_int(l: L, i: i64, v: i64) {
     lj::pushinteger(l, i);
-    lj::pushinteger(l, v);
+    lj::pushlint(l, v as lj::lua_Integer as i64);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_number(l: L, f: &str, v: f64) {
+pub fn pushf_number(l: L, f: &str, v: f64) {
     lj::pushstr(l, f);
     lj::pushnumber(l, v);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_bool(l: L, f: &str, b: bool) {
+pub fn pushf_bool(l: L, f: &str, b: bool) {
     lj::pushstr(l, f);
     lj::pushboolean(l, b);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushi_bool(l: L, i: i64, b: bool) {
+pub fn pushi_bool(l: L, i: i64, b: bool) {
     lj::pushinteger(l, i);
     lj::pushboolean(l, b);
     lj::rawset(l, -3);
 }
 /// lua_pushf_str: pushes nil for NULL.
-pub unsafe fn pushf_str(l: L, f: &str, s: Option<&[u8]>) {
+pub fn pushf_str(l: L, f: &str, s: Option<&[u8]>) {
     lj::pushstr(l, f);
     match s {
         Some(s) => {
@@ -70,12 +79,12 @@ pub unsafe fn pushf_str(l: L, f: &str, s: Option<&[u8]>) {
     }
     lj::rawset(l, -3);
 }
-pub unsafe fn pushi_str(l: L, i: i64, s: &[u8]) {
+pub fn pushi_str(l: L, i: i64, s: &[u8]) {
     lj::pushinteger(l, i);
     lj::pushbytes(l, s);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_raw(l: L, f: &str, v: Option<&[u8]>) {
+pub fn pushf_raw(l: L, f: &str, v: Option<&[u8]>) {
     lj::pushstr(l, f);
     match v {
         Some(v) => lj::pushbytes(l, v),
@@ -83,23 +92,23 @@ pub unsafe fn pushf_raw(l: L, f: &str, v: Option<&[u8]>) {
     }
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_reg(l: L, f: &str, r: i32) {
+pub fn pushf_reg(l: L, f: &str, r: i32) {
     lj::pushstr(l, f);
     lj::rawgeti(l, lj::LUA_REGISTRYINDEX, r as i64);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushf_table(l: L, f: &str) {
+pub fn pushf_table(l: L, f: &str) {
     lj::pushstr(l, f);
     lj::newtable(l);
     lj::rawset(l, -3);
 }
-pub unsafe fn pushi_table(l: L, i: i64) {
+pub fn pushi_table(l: L, i: i64) {
     lj::pushinteger(l, i);
     lj::newtable(l);
     lj::rawset(l, -3);
 }
 
-pub unsafe fn push_blob(l: L, idx_desync: i32, blob: &str) -> bool {
+pub fn push_blob(l: L, idx_desync: i32, blob: &str) -> bool {
     lj::getfield(l, idx_desync, blob);
     if lj::typ(l, -1) == lj::LUA_TNIL {
         lj::pop(l, 1);
@@ -113,7 +122,7 @@ pub unsafe fn push_blob(l: L, idx_desync: i32, blob: &str) -> bool {
     let _ = lj::tobytes(l, -1);
     true
 }
-pub unsafe fn pushf_blob(l: L, idx_desync: i32, f: &str, blob: &str) -> bool {
+pub fn pushf_blob(l: L, idx_desync: i32, f: &str, blob: &str) -> bool {
     lj::pushstr(l, f);
     if !push_blob(l, idx_desync, blob) {
         lj::pop(l, 1);
@@ -123,21 +132,21 @@ pub unsafe fn pushf_blob(l: L, idx_desync: i32, f: &str, blob: &str) -> bool {
     true
 }
 
-pub unsafe fn push_ipaddr(l: L, sa: &SockAddr) {
+pub fn push_ipaddr(l: L, sa: &SockAddr) {
     match sa {
         SockAddr::V4(a, _) => lj::pushbytes(l, a),
         SockAddr::V6(a, _) => lj::pushbytes(l, a),
         SockAddr::None => lj::pushnil(l),
     }
 }
-pub unsafe fn pushf_ipaddr(l: L, f: &str, sa: &SockAddr) {
+pub fn pushf_ipaddr(l: L, f: &str, sa: &SockAddr) {
     lj::pushstr(l, f);
     push_ipaddr(l, sa);
     lj::rawset(l, -3);
 }
 
 /// tcp: slice from the tcp header start, len: available length (dis.len_l4 or blob len)
-pub unsafe fn pushf_tcphdr_options(l: L, tcp: &[u8], len: usize) {
+pub fn pushf_tcphdr_options(l: L, tcp: &[u8], len: usize) {
     let g = guard_enter!(l);
     lj::pushstr(l, "options");
     lj::newtable(l);
@@ -189,15 +198,15 @@ pub unsafe fn pushf_tcphdr_options(l: L, tcp: &[u8], len: usize) {
     guard_leave!(l, g, 0);
 }
 
-pub unsafe fn push_tcphdr(l: L, tcp: Option<&[u8]>, len: usize) {
+pub fn push_tcphdr(l: L, tcp: Option<&[u8]>, len: usize) {
     let g = guard_enter!(l);
     match tcp {
         Some(t) if len >= TCP_HDR_LEN => {
             lj::createtable(l, 0, 11);
             pushf_int(l, "th_sport", pntoh16(t) as i64);
             pushf_int(l, "th_dport", pntoh16(&t[2..]) as i64);
-            pushf_int(l, "th_seq", pntoh32(&t[4..]) as i64);
-            pushf_int(l, "th_ack", pntoh32(&t[8..]) as i64);
+            pushf_lint(l, "th_seq", pntoh32(&t[4..]) as i64);
+            pushf_lint(l, "th_ack", pntoh32(&t[8..]) as i64);
             pushf_int(l, "th_x2", (t[12] & 0xF) as i64);
             pushf_int(l, "th_off", (t[12] >> 4) as i64);
             pushf_int(l, "th_flags", t[13] as i64);
@@ -210,12 +219,12 @@ pub unsafe fn push_tcphdr(l: L, tcp: Option<&[u8]>, len: usize) {
     }
     guard_leave!(l, g, 1);
 }
-pub unsafe fn pushf_tcphdr(l: L, tcp: Option<&[u8]>, len: usize) {
+pub fn pushf_tcphdr(l: L, tcp: Option<&[u8]>, len: usize) {
     lj::pushstr(l, "tcp");
     push_tcphdr(l, tcp, len);
     lj::rawset(l, -3);
 }
-pub unsafe fn push_udphdr(l: L, udp: Option<&[u8]>, len: usize) {
+pub fn push_udphdr(l: L, udp: Option<&[u8]>, len: usize) {
     match udp {
         Some(u) if len >= UDP_HDR_LEN => {
             lj::createtable(l, 0, 4);
@@ -227,29 +236,29 @@ pub unsafe fn push_udphdr(l: L, udp: Option<&[u8]>, len: usize) {
         _ => lj::pushnil(l),
     }
 }
-pub unsafe fn pushf_udphdr(l: L, udp: Option<&[u8]>, len: usize) {
+pub fn pushf_udphdr(l: L, udp: Option<&[u8]>, len: usize) {
     lj::pushstr(l, "udp");
     push_udphdr(l, udp, len);
     lj::rawset(l, -3);
 }
-pub unsafe fn push_icmphdr(l: L, icmp: Option<&[u8]>, len: usize) {
+pub fn push_icmphdr(l: L, icmp: Option<&[u8]>, len: usize) {
     match icmp {
         Some(i) if len >= ICMP_HDR_LEN => {
             lj::createtable(l, 0, 4);
             pushf_int(l, "icmp_type", i[0] as i64);
             pushf_int(l, "icmp_code", i[1] as i64);
             pushf_int(l, "icmp_cksum", pntoh16(&i[2..]) as i64);
-            pushf_int(l, "icmp_data", pntoh32(&i[4..]) as i64);
+            pushf_lint(l, "icmp_data", pntoh32(&i[4..]) as i64);
         }
         _ => lj::pushnil(l),
     }
 }
-pub unsafe fn pushf_icmphdr(l: L, icmp: Option<&[u8]>, len: usize) {
+pub fn pushf_icmphdr(l: L, icmp: Option<&[u8]>, len: usize) {
     lj::pushstr(l, "icmp");
     push_icmphdr(l, icmp, len);
     lj::rawset(l, -3);
 }
-pub unsafe fn push_iphdr(l: L, ip: Option<&[u8]>, len: usize) {
+pub fn push_iphdr(l: L, ip: Option<&[u8]>, len: usize) {
     match ip {
         Some(ip) if len >= IP_HDR_LEN => {
             let hl = ((ip[0] & 0xF) as usize) << 2;
@@ -273,12 +282,12 @@ pub unsafe fn push_iphdr(l: L, ip: Option<&[u8]>, len: usize) {
         _ => lj::pushnil(l),
     }
 }
-pub unsafe fn pushf_iphdr(l: L, ip: Option<&[u8]>, len: usize) {
+pub fn pushf_iphdr(l: L, ip: Option<&[u8]>, len: usize) {
     lj::pushstr(l, "ip");
     push_iphdr(l, ip, len);
     lj::rawset(l, -3);
 }
-unsafe fn pushf_ip6exthdr(l: L, ip6: &[u8], len: usize) {
+fn pushf_ip6exthdr(l: L, ip6: &[u8], len: usize) {
     lj::pushstr(l, "exthdr");
     lj::newtable(l);
     if len >= IP6_HDR_LEN {
@@ -334,12 +343,12 @@ unsafe fn pushf_ip6exthdr(l: L, ip6: &[u8], len: usize) {
     }
     lj::rawset(l, -3);
 }
-pub unsafe fn push_ip6hdr(l: L, ip6: Option<&[u8]>, len: usize) {
+pub fn push_ip6hdr(l: L, ip6: Option<&[u8]>, len: usize) {
     match ip6 {
         Some(ip6) if len >= IP6_HDR_LEN => {
             lj::createtable(l, 0, 7);
-            pushf_int(l, "ip6_flow", pntoh32(ip6) as i64);
-            pushf_int(l, "ip6_plen", pntoh16(&ip6[4..]) as i64);
+            pushf_lint(l, "ip6_flow", pntoh32(ip6) as i64);
+            pushf_lint(l, "ip6_plen", pntoh16(&ip6[4..]) as i64);
             pushf_int(l, "ip6_nxt", ip6[6] as i64);
             pushf_int(l, "ip6_hlim", ip6[7] as i64);
             pushf_raw(l, "ip6_src", Some(&ip6[8..24]));
@@ -349,13 +358,13 @@ pub unsafe fn push_ip6hdr(l: L, ip6: Option<&[u8]>, len: usize) {
         _ => lj::pushnil(l),
     }
 }
-pub unsafe fn pushf_ip6hdr(l: L, ip6: Option<&[u8]>, len: usize) {
+pub fn pushf_ip6hdr(l: L, ip6: Option<&[u8]>, len: usize) {
     lj::pushstr(l, "ip6");
     push_ip6hdr(l, ip6, len);
     lj::rawset(l, -3);
 }
 
-pub unsafe fn push_dissect(l: L, pkt: &[u8], dis: Option<&Dissect>) {
+pub fn push_dissect(l: L, pkt: &[u8], dis: Option<&Dissect>) {
     let g = guard_enter!(l);
     match dis {
         Some(d) => {
@@ -385,19 +394,19 @@ pub unsafe fn push_dissect(l: L, pkt: &[u8], dis: Option<&Dissect>) {
     guard_leave!(l, g, 1);
 }
 
-unsafe fn pushf_ctrack_pos(l: L, ipproto: u8, p: &CtrackPosition) {
-    pushf_int(l, "pcounter", p.pcounter as i64);
-    pushf_int(l, "pdcounter", p.pdcounter as i64);
-    pushf_int(l, "pbcounter", p.pbcounter as i64);
+fn pushf_ctrack_pos(l: L, ipproto: u8, p: &CtrackPosition) {
+    pushf_lint(l, "pcounter", p.pcounter as i64);
+    pushf_lint(l, "pdcounter", p.pdcounter as i64);
+    pushf_lint(l, "pbcounter", p.pbcounter as i64);
     if p.ip6flow != 0 {
         pushf_int(l, "ip6_flow", p.ip6flow as i64);
     }
     if ipproto == IPPROTO_TCP {
         lj::pushstr(l, "tcp");
         lj::createtable(l, 0, 11);
-        pushf_int(l, "seq0", p.seq0 as i64);
-        pushf_int(l, "seq", p.seq_last as i64);
-        pushf_int(l, "rseq", p.seq_last.wrapping_sub(p.seq0) as i64);
+        pushf_lint(l, "seq0", p.seq0 as i64);
+        pushf_lint(l, "seq", p.seq_last as i64);
+        pushf_lint(l, "rseq", p.seq_last.wrapping_sub(p.seq0) as i64);
         pushf_bool(l, "rseq_over_2G", p.rseq_over_2g);
         pushf_int(l, "pos", p.pos.wrapping_sub(p.seq0) as i64);
         pushf_int(l, "uppos", p.uppos.wrapping_sub(p.seq0) as i64);
@@ -410,7 +419,7 @@ unsafe fn pushf_ctrack_pos(l: L, ipproto: u8, p: &CtrackPosition) {
     }
 }
 
-pub unsafe fn push_ctrack(
+pub fn push_ctrack(
     l: L,
     ct: Option<&Ctrack>,
     tpos: Option<&CtrackPositions>,
@@ -484,7 +493,7 @@ pub unsafe fn push_ctrack(
 }
 
 /// lua_pushf_args. `args` in LIST order.
-pub unsafe fn pushf_args(l: L, args: &[Str2], idx_desync: i32, subst_prefix: bool) -> bool {
+pub fn pushf_args(l: L, args: &[Str2], idx_desync: i32, subst_prefix: bool) -> bool {
     let g = guard_enter!(l);
     let idx_desync = lj::absindex(l, idx_desync);
     lj::pushstr(l, "arg");
@@ -526,14 +535,14 @@ pub unsafe fn pushf_args(l: L, args: &[Str2], idx_desync: i32, subst_prefix: boo
     true
 }
 
-unsafe fn pushf_pos(l: L, name: &str, p: &PacketPos) {
+fn pushf_pos(l: L, name: &str, p: &PacketPos) {
     pushf_table(l, name);
     lj::getfield(l, -1, name);
     pushf_str(l, "mode", Some(&[p.mode]));
-    pushf_int(l, "pos", p.pos as i64);
+    pushf_lint(l, "pos", p.pos as i64);
     lj::pop(l, 1);
 }
-pub unsafe fn pushf_range(l: L, name: &str, r: &PacketRange) {
+pub fn pushf_range(l: L, name: &str, r: &PacketRange) {
     pushf_table(l, name);
     lj::getfield(l, -1, name);
     pushf_bool(l, "upper_cutoff", r.upper_cutoff);
@@ -549,7 +558,7 @@ pub struct ReconOpts {
     pub ip6_last_proto: u8,
 }
 
-pub unsafe fn reconstruct_extract_options(l: L, idx: i32) -> ReconOpts {
+pub fn reconstruct_extract_options(l: L, idx: i32) -> ReconOpts {
     if lj::isnoneornil(l, idx) {
         return ReconOpts {
             keepsum: false,
@@ -584,13 +593,20 @@ pub unsafe fn reconstruct_extract_options(l: L, idx: i32) -> ReconOpts {
     }
 }
 
-unsafe fn get_num_field(l: L, idx: i32, f: &str) -> Option<i64> {
+fn get_num_field(l: L, idx: i32, f: &str) -> Option<i64> {
     lj::getfield(l, idx, f);
     let r = (lj::typ(l, -1) == lj::LUA_TNUMBER).then(|| lj::tointeger(l, -1));
     lj::pop(l, 1);
     r
 }
-unsafe fn get_int_field(l: L, idx: i32, f: &str) -> i64 {
+/// Like get_num_field, read with lua_tolint (32-bit header fields).
+fn get_lint_field(l: L, idx: i32, f: &str) -> Option<i64> {
+    lj::getfield(l, idx, f);
+    let r = (lj::typ(l, -1) == lj::LUA_TNUMBER).then(|| lj::tolint(l, -1));
+    lj::pop(l, 1);
+    r
+}
+fn get_int_field(l: L, idx: i32, f: &str) -> i64 {
     lj::getfield(l, idx, f);
     let v = lj::tointeger(l, -1);
     lj::pop(l, 1);
@@ -598,7 +614,7 @@ unsafe fn get_int_field(l: L, idx: i32, f: &str) -> i64 {
 }
 
 /// buf: output buffer with buf.len() == C buffer size. Returns used length.
-unsafe fn reconstruct_ip6exthdr(
+fn reconstruct_ip6exthdr(
     l: L,
     idx: i32,
     buf: &mut [u8],
@@ -646,7 +662,7 @@ unsafe fn reconstruct_ip6exthdr(
                 lj::settop(l, g);
                 return None;
             }
-            let p = lj::tobytes(l, -1).unwrap_or(&[]);
+            let p = lj::tobytes(l, -1).unwrap_or_default();
             let mut ln = p.len();
             if ln < 6 || ln + 2 > left {
                 lj::settop(l, g);
@@ -657,7 +673,7 @@ unsafe fn reconstruct_ip6exthdr(
                     lj::settop(l, g);
                     return None;
                 }
-                buf[data + 2..data + 2 + ln].copy_from_slice(p);
+                buf[data + 2..data + 2 + ln].copy_from_slice(&p);
                 ln += 2;
                 buf[data + 1] = ((ln >> 2) - 2) as u8;
             } else {
@@ -665,7 +681,7 @@ unsafe fn reconstruct_ip6exthdr(
                     lj::settop(l, g);
                     return None;
                 }
-                buf[data + 2..data + 2 + ln].copy_from_slice(p);
+                buf[data + 2..data + 2 + ln].copy_from_slice(&p);
                 ln += 2;
                 buf[data + 1] = ((ln >> 3) - 1) as u8;
             }
@@ -688,7 +704,7 @@ unsafe fn reconstruct_ip6exthdr(
     Some(filled)
 }
 
-pub unsafe fn reconstruct_ip6hdr(
+pub fn reconstruct_ip6hdr(
     l: L,
     idx: i32,
     buf: &mut [u8],
@@ -702,7 +718,7 @@ pub unsafe fn reconstruct_ip6hdr(
     let idx = lj::absindex(l, idx);
     lj::getfield(l, idx, "ip6_flow");
     let flow = if lj::typ(l, -1) == lj::LUA_TNUMBER {
-        lj::tointeger(l, -1) as u32
+        lj::tolint(l, -1) as u32
     } else {
         0x60000000
     };
@@ -718,7 +734,7 @@ pub unsafe fn reconstruct_ip6hdr(
             return None;
         }
         match lj::tobytes(l, -1) {
-            Some(p) if p.len() == 16 => buf[o..o + 16].copy_from_slice(p),
+            Some(p) if p.len() == 16 => buf[o..o + 16].copy_from_slice(&p),
             _ => {
                 lj::pop(l, 1);
                 guard_leave!(l, g, 0);
@@ -749,7 +765,7 @@ pub unsafe fn reconstruct_ip6hdr(
     r
 }
 
-pub unsafe fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
+pub fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
     let g = guard_enter!(l);
     if buf.len() < IP_HDR_LEN || lj::typ(l, idx) != lj::LUA_TTABLE {
         return None;
@@ -782,7 +798,7 @@ pub unsafe fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize>
             return fail(l);
         }
         match lj::tobytes(l, -1) {
-            Some(p) if p.len() == 4 => buf[o..o + 4].copy_from_slice(p),
+            Some(p) if p.len() == 4 => buf[o..o + 4].copy_from_slice(&p),
             _ => return fail(l),
         }
         lj::pop(l, 1);
@@ -796,7 +812,7 @@ pub unsafe fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize>
                 if lopt > 40 || IP_HDR_LEN + ((lopt + 3) & !3) > buf.len() {
                     return fail(l);
                 }
-                buf[IP_HDR_LEN..IP_HDR_LEN + lopt].copy_from_slice(p);
+                buf[IP_HDR_LEN..IP_HDR_LEN + lopt].copy_from_slice(&p);
                 let pad = (4 - (lopt & 3)) & 3;
                 buf[IP_HDR_LEN + lopt..IP_HDR_LEN + lopt + pad].fill(0);
                 lopt = (lopt + 3) & !3;
@@ -811,7 +827,7 @@ pub unsafe fn reconstruct_iphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize>
     Some(len)
 }
 
-unsafe fn reconstruct_tcphdr_options(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
+fn reconstruct_tcphdr_options(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
     if buf.len() < TCP_HDR_LEN {
         return None;
     }
@@ -854,13 +870,13 @@ unsafe fn reconstruct_tcphdr_options(l: L, idx: i32, buf: &mut [u8]) -> Option<u
                     } else {
                         None
                     };
-                    let ln = p.map_or(0, |p| p.len());
+                    let ln = p.as_ref().map_or(0, |p| p.len());
                     if 2 + ln > left {
                         lj::settop(l, g);
                         return None;
                     }
                     if let Some(p) = p {
-                        buf[data + 2..data + 2 + ln].copy_from_slice(p);
+                        buf[data + 2..data + 2 + ln].copy_from_slice(&p);
                     }
                     let ln = ln + 2;
                     buf[data] = kind;
@@ -887,7 +903,7 @@ unsafe fn reconstruct_tcphdr_options(l: L, idx: i32, buf: &mut [u8]) -> Option<u
     Some(filled as usize)
 }
 
-pub unsafe fn reconstruct_tcphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
+pub fn reconstruct_tcphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize> {
     if buf.len() < TCP_HDR_LEN || lj::typ(l, idx) != lj::LUA_TTABLE {
         return None;
     }
@@ -905,11 +921,11 @@ pub unsafe fn reconstruct_tcphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize
         return fail(l);
     };
     buf[2..4].copy_from_slice(&(v as u16).to_be_bytes());
-    let Some(v) = get_num_field(l, idx, "th_seq") else {
+    let Some(v) = get_lint_field(l, idx, "th_seq") else {
         return fail(l);
     };
     buf[4..8].copy_from_slice(&(v as u32).to_be_bytes());
-    let Some(v) = get_num_field(l, idx, "th_ack") else {
+    let Some(v) = get_lint_field(l, idx, "th_ack") else {
         return fail(l);
     };
     buf[8..12].copy_from_slice(&(v as u32).to_be_bytes());
@@ -931,7 +947,7 @@ pub unsafe fn reconstruct_tcphdr(l: L, idx: i32, buf: &mut [u8]) -> Option<usize
     r
 }
 
-pub unsafe fn reconstruct_udphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
+pub fn reconstruct_udphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
     if lj::typ(l, idx) != lj::LUA_TTABLE {
         return false;
     }
@@ -948,7 +964,7 @@ pub unsafe fn reconstruct_udphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
     true
 }
 
-pub unsafe fn reconstruct_icmphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
+pub fn reconstruct_icmphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
     if lj::typ(l, idx) != lj::LUA_TTABLE {
         return false;
     }
@@ -960,7 +976,7 @@ pub unsafe fn reconstruct_icmphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
         return false;
     };
     buf[1] = v as u8;
-    let Some(v) = get_num_field(l, idx, "icmp_data") else {
+    let Some(v) = get_lint_field(l, idx, "icmp_data") else {
         return false;
     };
     buf[4..8].copy_from_slice(&(v as u32).to_be_bytes());
@@ -968,7 +984,7 @@ pub unsafe fn reconstruct_icmphdr(l: L, idx: i32, buf: &mut [u8]) -> bool {
     true
 }
 
-unsafe fn ip6_l4proto_from_dissect(l: L, idx: i32) -> u8 {
+fn ip6_l4proto_from_dissect(l: L, idx: i32) -> u8 {
     let is_table = |f: &str| {
         lj::getfield(l, idx, f);
         let t = lj::typ(l, -1);
@@ -993,7 +1009,7 @@ unsafe fn ip6_l4proto_from_dissect(l: L, idx: i32) -> u8 {
 }
 
 /// lua_reconstruct_dissect into `buf` (its length is the C buffer size). Returns packet length.
-pub unsafe fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Option<usize> {
+pub fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts) -> Option<usize> {
     let g = guard_enter!(l);
     let idx = lj::absindex(l, idx);
     let mut preserve_next = o.ip6_preserve_next;
@@ -1061,7 +1077,7 @@ pub unsafe fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts)
                 dlog_err!("reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n", p.len(), left);
                 return err(l);
             }
-            buf[data..data + p.len()].copy_from_slice(p);
+            buf[data..data + p.len()].copy_from_slice(&p);
             data += p.len();
         }
         lj::pop(l, 1);
@@ -1127,7 +1143,7 @@ pub unsafe fn reconstruct_dissect(l: L, idx: i32, buf: &mut [u8], o: &ReconOpts)
                 dlog_err!("reconstruct_dissect: payload does not fit into the buffer : payload {} buffer_left {}\n", lpayload, left);
                 return err(l);
             }
-            buf[data..data + lpayload].copy_from_slice(p);
+            buf[data..data + lpayload].copy_from_slice(&p);
             data += lpayload;
         }
         lj::pop(l, 1);

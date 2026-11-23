@@ -18,7 +18,7 @@ use push::{guard_enter, guard_leave};
 use std::cell::{Cell, RefCell};
 
 thread_local! {
-    static STATE: Cell<L> = const { Cell::new(std::ptr::null_mut()) };
+    static STATE: Cell<Option<L>> = const { Cell::new(None) };
     static REF_DESYNC_CTX: Cell<i32> = const { Cell::new(0) };
     static CTX: RefCell<DesyncCtx> = RefCell::new(DesyncCtx::default());
     static GC_TIME: Cell<u64> = const { Cell::new(0) };
@@ -46,8 +46,24 @@ pub fn ctx_with<T>(f: impl FnOnce(&mut DesyncCtx) -> T) -> T {
 
 const MT_CTX: &std::ffi::CStr = c"desync_ctx";
 
+/// Layout of the C original's t_lua_desync_context (lua.h); only its size is used:
+/// 56 bytes on 64-bit targets, 28 on 32-bit ones.
+#[repr(C)]
+#[allow(dead_code)]
+struct CDesyncCtx {
+    func_n: std::os::raw::c_uint,
+    func: *const u8,
+    instance: *const u8,
+    dp: *const u8,
+    dis: *const u8,
+    ctrack: *const u8,
+    incoming: bool,
+    cancel: bool,
+    valid: bool,
+}
+
 /// lua_desync_ctx(): validates arg 1.
-pub unsafe fn desync_ctx_check(l: L) {
+pub fn desync_ctx_check(l: L) {
     if lj::isnil(l, 1) {
         lj::error(l, "missing ctx");
     }
@@ -57,8 +73,14 @@ pub unsafe fn desync_ctx_check(l: L) {
     }
 }
 
-pub fn state() -> L {
+/// The process Lua state, if initialized.
+pub fn state_opt() -> Option<L> {
     STATE.with(|s| s.get())
+}
+/// The process Lua state. Only called while Lua is initialized (desync runs after lua_init).
+pub fn state() -> L {
+    // INFALLIBLE: callers run only between lua_init and lua_shutdown
+    state_opt().expect("lua state")
 }
 pub fn ref_desync_ctx() -> i32 {
     REF_DESYNC_CTX.with(|c| c.get())
@@ -66,66 +88,48 @@ pub fn ref_desync_ctx() -> i32 {
 
 /// New empty table stored in the registry (conntrack lua_state / instance cutoff).
 pub fn new_table_ref() -> i32 {
-    let l = state();
-    if l.is_null() {
+    let Some(l) = state_opt() else {
         return lj::LUA_NOREF;
-    }
-    // SAFETY: live state; pushes one table and pops it into the registry.
-    unsafe {
-        lj::newtable(l);
-        lj::ref_(l)
-    }
+    };
+    lj::newtable(l);
+    lj::ref_(l)
 }
 pub fn unref(r: i32) {
-    let l = state();
-    if !l.is_null() {
-        // SAFETY: live state; luaL_unref ignores NOREF/REFNIL.
-        unsafe { lj::unref(l, r) }
+    if let Some(l) = state_opt() {
+        lj::unref(l, r)
     }
 }
 
 /// lua_dlog_error: report and pop the error at the top of the stack.
 pub fn lua_dlog_error() {
     let l = state();
-    // SAFETY: live state with an error value on top.
-    unsafe {
-        if lj::isstring(l, -1) {
-            let m = lj::tobytes(l, -1)
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default();
-            dlog_err!("LUA ERROR: {}\n", m);
-        }
-        lj::pop(l, 1);
-    }
+    lua_perror(l);
 }
 
 /// Run a timer callback: func(name, data). False on Lua error (already reported).
 pub fn call_timer(func_ref: i32, name: &str, data_ref: i32) -> bool {
     let l = state();
-    // SAFETY: live state; balanced pcall.
-    unsafe {
-        lj::rawgeti(l, lj::LUA_REGISTRYINDEX, func_ref as i64);
-        lj::pushstr(l, name);
-        lj::rawgeti(l, lj::LUA_REGISTRYINDEX, data_ref as i64);
-        if lj::pcall(l, 2, 0) != 0 {
-            lua_dlog_error();
-            return false;
-        }
+    lj::rawgeti(l, lj::LUA_REGISTRYINDEX, func_ref as i64);
+    lj::pushstr(l, name);
+    lj::rawgeti(l, lj::LUA_REGISTRYINDEX, data_ref as i64);
+    if lj::pcall(l, 2, 0) != 0 {
+        lua_dlog_error();
+        return false;
     }
     true
 }
 
-unsafe fn lua_perror(l: L) {
+fn lua_perror(l: L) {
     if lj::isstring(l, -1) {
         let m = lj::tobytes(l, -1)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
         dlog_err!("LUA ERROR: {}\n", m);
     }
     lj::pop(l, 1);
 }
 
-unsafe extern "C-unwind" fn lua_panic(l: L) -> i32 {
+fn lua_panic(l: L) -> i32 {
     lua_perror(l);
     dlog_err!("LUA PANIC: THIS IS FATAL. DYING.\n");
     crate::cffi::fflush_all();
@@ -133,16 +137,14 @@ unsafe extern "C-unwind" fn lua_panic(l: L) -> i32 {
 }
 
 pub fn lua_shutdown() {
-    let l = state();
-    if l.is_null() {
+    let Some(l) = state_opt() else {
         return;
-    }
+    };
     dlog!("LUA SHUTDOWN\n");
     // lua_cleanup
     let r = ref_desync_ctx();
     if r != 0 {
-        // SAFETY: live state.
-        unsafe { lj::unref(l, r) };
+        lj::unref(l, r);
         REF_DESYNC_CTX.with(|c| c.set(0));
     }
     if let Some(p) = crate::params::params_opt() {
@@ -150,19 +152,19 @@ pub fn lua_shutdown() {
         p.timers.borrow_mut().0.clear();
     }
     // SAFETY: closing the state we created; nothing uses it afterwards.
+    STATE.with(|s| s.set(None));
+    // SAFETY: the only stored copy was just cleared; callers hold no copy past shutdown.
     unsafe { lj::close(l) };
-    STATE.with(|s| s.set(std::ptr::null_mut()));
 }
 
-unsafe fn lua_basic_init() -> bool {
+fn lua_basic_init() -> bool {
     lua_shutdown();
-    let l = lj::newstate();
-    if l.is_null() {
+    let Some(l) = lj::newstate() else {
         dlog_err!("LUA INIT ERROR\n");
         return false;
-    }
-    STATE.with(|s| s.set(l));
-    lj::atpanic(l, lua_panic);
+    };
+    STATE.with(|s| s.set(Some(l)));
+    lj::atpanic(l, crate::cfn!(lua_panic));
     lj::openlibs(l);
     dlog_condup!("LUA v{}.{} {}\n", 5, 1, env!("NFQWS2_LUAJIT_VERSION"));
     lj::getfield(l, lj::LUA_REGISTRYINDEX, "_LOADED");
@@ -183,7 +185,7 @@ unsafe fn lua_basic_init() -> bool {
                 );
                 n += 1;
                 while let Some(s) = lj::tobytes(l, n) {
-                    dlog_condup!(" {}", String::from_utf8_lossy(s));
+                    dlog_condup!(" {}", String::from_utf8_lossy(&s));
                     n += 1;
                 }
                 dlog_condup!("\n");
@@ -194,7 +196,7 @@ unsafe fn lua_basic_init() -> bool {
     true
 }
 
-unsafe fn lua_sec_harden(l: L) {
+fn lua_sec_harden(l: L) {
     let g = guard_enter!(l);
     dlog!("LUA REMOVE:");
     let bad: [(&str, Option<&str>, Option<&str>); 5] = [
@@ -228,7 +230,7 @@ unsafe fn lua_sec_harden(l: L) {
     guard_leave!(l, g, 0);
 }
 
-unsafe fn lua_init_blobs(l: L) {
+fn lua_init_blobs(l: L) {
     let p = params();
     let blobs = std::mem::take(&mut p.blobs.borrow_mut().0);
     for b in blobs {
@@ -239,7 +241,7 @@ unsafe fn lua_init_blobs(l: L) {
     }
 }
 
-unsafe fn lua_init_const(l: L) {
+fn lua_init_const(l: L) {
     let p = params();
     dlog!("LUA STR:");
     // ADR-009: the original's params.verstr is wiped by init_params() before Lua sees it
@@ -391,14 +393,14 @@ unsafe fn lua_init_const(l: L) {
     dlog!("\n");
 }
 
-unsafe fn lua_init_mt(l: L) {
+fn lua_init_mt(l: L) {
     zlib::mt_init(l);
     lj::newmetatable(l, MT_CTX);
     lj::pop(l, 1);
     if ref_desync_ctx() == 0 {
         let g = guard_enter!(l);
-        // sizeof(t_lua_desync_context) on x86-64 (Lua heap accounting)
-        lj::newuserdata(l, 56);
+        // The data lives in CTX; the userdata only has the C size (Lua heap accounting).
+        lj::newuserdata(l, std::mem::size_of::<CDesyncCtx>());
         lj::getmetatable_reg(l, MT_CTX);
         lj::setmetatable(l, -2);
         REF_DESYNC_CTX.with(|c| c.set(lj::ref_(l)));
@@ -442,14 +444,14 @@ pub fn lua_test_init_script_files() -> bool {
 
 /// The C original raises luaL_error outside any protected call here, which ends in the
 /// panic handler: report and exit(100) the same way.
-unsafe fn unprotected_error(l: L, msg: &str) -> ! {
+fn unprotected_error(l: L, msg: &str) -> ! {
     lj::pushstr(l, msg);
     lua_panic(l);
     std::process::exit(100);
 }
 
 /// luaL_doZfile
-unsafe fn do_zfile(l: L, filename: &str) -> i32 {
+fn do_zfile(l: L, filename: &str) -> i32 {
     let Some((gz, fname)) = file_open_test(filename) else {
         unprotected_error(
             l,
@@ -474,7 +476,7 @@ unsafe fn do_zfile(l: L, filename: &str) -> i32 {
     }
 }
 
-unsafe fn lua_init_scripts(l: L) -> bool {
+fn lua_init_scripts(l: L) -> bool {
     let scripts = params().lua_init_scripts.clone();
     for s in scripts {
         if crate::nfqws::quit_requested() {
@@ -499,7 +501,7 @@ unsafe fn lua_init_scripts(l: L) -> bool {
     true
 }
 
-unsafe fn lua_desync_functions_exist(l: L) -> bool {
+fn lua_desync_functions_exist(l: L) -> bool {
     for dp in params().desync_profiles.borrow().iter() {
         for f in &dp.borrow().lua_desync {
             lj::getglobal(l, &f.func);
@@ -516,50 +518,47 @@ unsafe fn lua_desync_functions_exist(l: L) -> bool {
 
 pub fn lua_init() -> bool {
     dlog!("\nLUA INIT\n");
-    // SAFETY: creates and initializes the single Lua state of this process.
-    unsafe {
-        if !lua_basic_init() {
-            return false;
-        }
-        let l = state();
-        let g = lj::gettop(l);
-        lua_sec_harden(l);
-        lua_init_blobs(l);
-        lua_init_const(l);
-        for (n, f) in api::functions() {
-            lj::register(l, n, f);
-        }
-        lua_init_mt(l);
-        let ok = lua_init_scripts(l) && lua_desync_functions_exist(l);
-        if g != lj::gettop(l) {
-            lj::error(l, "stack guard failure");
-        }
-        if !ok {
-            lua_shutdown();
-            return false;
-        }
+    if !lua_basic_init() {
+        return false;
+    }
+    let l = state();
+    let g = lj::gettop(l);
+    lua_sec_harden(l);
+    lua_init_blobs(l);
+    lua_init_const(l);
+    for (n, f) in api::functions() {
+        lj::register(l, n, f);
+    }
+    lua_init_mt(l);
+    let ok = lua_init_scripts(l) && lua_desync_functions_exist(l);
+    if g != lj::gettop(l) {
+        lj::error(l, "stack guard failure");
+    }
+    if !ok {
+        lua_shutdown();
+        return false;
     }
     dlog!("LUA INIT DONE\n\n");
     true
 }
 
-unsafe extern "C-unwind" fn interrupt_hook(l: L, _ar: *mut lj::lua_Debug) {
-    lj::sethook(l, None, 0, 0);
-    lj::error(l, "INTERRUPT");
+unsafe extern "C-unwind" fn interrupt_hook(p: *mut lj::lua_State, _ar: *mut lj::lua_Debug) {
+    // SAFETY: LuaJIT calls hooks with its live state.
+    if let Some(l) = unsafe { L::from_raw(p) } {
+        lj::sethook(l, None, 0, 0);
+        lj::error(l, "INTERRUPT");
+    }
 }
 
 pub fn lua_req_quit() {
-    let l = state();
-    if !l.is_null() {
-        // SAFETY: live state; installing a debug hook is allowed from a signal context in Lua.
-        unsafe {
-            lj::sethook(
-                l,
-                Some(interrupt_hook),
-                lj::LUA_MASKCALL | lj::LUA_MASKRET | lj::LUA_MASKCOUNT | lj::LUA_MASKLINE,
-                1,
-            )
-        };
+    if let Some(l) = state_opt() {
+        // lua_sethook is the one Lua API call meant to be made from a signal handler.
+        lj::sethook(
+            l,
+            Some(interrupt_hook),
+            lj::LUA_MASKCALL | lj::LUA_MASKRET | lj::LUA_MASKCOUNT | lj::LUA_MASKLINE,
+            1,
+        );
     }
 }
 
@@ -569,12 +568,9 @@ pub fn lua_do_gc() {
         let now = boottime_ms();
         if now.wrapping_sub(GC_TIME.with(|g| g.get())) >= p.lua_gc {
             let l = state();
-            // SAFETY: live state.
-            let (kb1, kb2) = unsafe {
-                let a = lj::gc(l, lj::LUA_GCCOUNT, 0);
-                lj::gc(l, lj::LUA_GCCOLLECT, 0);
-                (a, lj::gc(l, lj::LUA_GCCOUNT, 0))
-            };
+            let kb1 = lj::gc(l, lj::LUA_GCCOUNT, 0);
+            lj::gc(l, lj::LUA_GCCOLLECT, 0);
+            let kb2 = lj::gc(l, lj::LUA_GCCOUNT, 0);
             dlog!("\nLUA GARBAGE COLLECT: {}K => {}K\n", kb1, kb2);
             GC_TIME.with(|g| g.set(now));
         }

@@ -1086,7 +1086,7 @@ fn ipcache_get_ttl(
     }
 }
 
-unsafe fn desync_get_result(l: lj::L) -> Option<u8> {
+fn desync_get_result(l: lj::L) -> Option<u8> {
     let rc = lj::gettop(l);
     let r = if rc > 1 {
         dlog_err!("desync function returned more than one result : {}\n", rc);
@@ -1094,7 +1094,7 @@ unsafe fn desync_get_result(l: lj::L) -> Option<u8> {
     } else if rc == 1 {
         if lj::isnil(l, -1) {
             Some(VERDICT_PASS)
-        } else if mlua::ffi::lua_isnumber(l, -1) == 0 {
+        } else if !lj::isnumber(l, -1) {
             dlog_err!("desync function returned non-int result\n");
             None
         } else {
@@ -1186,36 +1186,156 @@ fn desync(
     };
     let s_dir = if incoming { "in" } else { "out" };
     let l = crate::lua::state();
-    // SAFETY: the Lua state is live; stack balanced as in desync.c (guard checked below).
-    unsafe {
-        let g = lj::gettop(l);
-        let funcs = dp.borrow().lua_desync.clone();
-        let (dpn, dpname, dpcookie) = {
-            let d = dp.borrow();
-            (d.n, d.name.clone(), d.cookie.clone())
+    let g = lj::gettop(l);
+    let funcs = dp.borrow().lua_desync.clone();
+    let (dpn, dpname, dpcookie) = {
+        let d = dp.borrow();
+        (d.n, d.name.clone(), d.cookie.clone())
+    };
+    let mut ref_arg = lj::LUA_NOREF;
+    let mut err = false;
+    if !funcs.is_empty() {
+        crate::lua::ctx_with(|c| {
+            c.dp = Some(dp.clone());
+            c.dp_n = dpn;
+            c.ctrack = ctrack.clone();
+            c.pkt = pkt[..dis.len_pkt].to_vec();
+            c.dis = *dis;
+            c.cancel = false;
+            c.incoming = incoming;
+        });
+        let mut cutoff_all = true;
+        let mut unwanted = true;
+        let tp = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
+        let (pos, _rpos) = match &tp {
+            Some(t) => {
+                let (a, b) = side(incoming, t);
+                (Some(a), Some(b))
+            }
+            None => (None, None),
         };
-        let mut ref_arg = lj::LUA_NOREF;
-        let mut err = false;
-        if !funcs.is_empty() {
+        for (i, f) in funcs.iter().enumerate() {
+            let fnn = i as u32 + 1;
+            let instance = crate::lua::api::desync_instance(&f.func, dpn, fnn);
             crate::lua::ctx_with(|c| {
-                c.dp = Some(dp.clone());
-                c.dp_n = dpn;
-                c.ctrack = ctrack.clone();
-                c.pkt = pkt[..dis.len_pkt].to_vec();
-                c.dis = *dis;
-                c.cancel = false;
-                c.incoming = incoming;
+                c.func_n = fnn;
+                c.func = f.func.clone();
+                c.instance = instance.clone();
             });
-            let mut cutoff_all = true;
-            let mut unwanted = true;
-            let tp = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
-            let (pos, _rpos) = match &tp {
-                Some(t) => {
-                    let (a, b) = side(incoming, t);
-                    (Some(a), Some(b))
+            let range = if incoming { &f.range_in } else { &f.range_out };
+            if unwanted {
+                unwanted &= !l7_payload_match(l7payload, f.payload_type);
+            }
+            if cutoff_all {
+                if instance_cutoff_check(l, &ctrack, &instance, dpn, incoming) {
+                    dlog!("* lua '{}' : voluntary cutoff\n", instance);
+                } else if check_pos_cutoff(pos.as_ref(), range) {
+                    dlog!(
+                        "* lua '{}' : {} pos {}{} {}{} overflow {} {} is beyond range {}{}{}{}{} (ctrack {})\n",
+                        instance,
+                        s_dir,
+                        range.from.mode as char,
+                        pos_get(pos.as_ref(), range.from.mode),
+                        range.to.mode as char,
+                        pos_get(pos.as_ref(), range.to.mode),
+                        pos_overflow(pos.as_ref(), range.from.mode) as u8,
+                        pos_overflow(pos.as_ref(), range.to.mode) as u8,
+                        range.from.mode as char,
+                        range.from.pos,
+                        if range.upper_cutoff { '<' } else { '-' },
+                        range.to.mode as char,
+                        range.to.pos,
+                        if ctrack.is_some() { "enabled" } else { "disabled" }
+                    );
+                } else {
+                    cutoff_all = false;
                 }
-                None => (None, None),
-            };
+            }
+        }
+        if cutoff_all {
+            dlog!("all {} desync functions reached cutoff condition\n", s_dir);
+            if let Some(c) = &ctrack {
+                let mut c = c.borrow_mut();
+                if incoming {
+                    c.b_lua_in_cutoff = true;
+                } else {
+                    c.b_lua_out_cutoff = true;
+                }
+            }
+        } else if unwanted {
+            dlog!(
+                "all {} desync functions do not want `{}` payload\n",
+                s_dir,
+                l7payload_str(l7payload).unwrap_or("(null)")
+            );
+        } else {
+            lj::newtable(l);
+            lj::pushstr(l, "dis");
+            push_dissect(l, pkt, Some(dis));
+            lj::rawset(l, -3);
+            lj::pushstr(l, "track");
+            {
+                let cb = ctrack.as_ref().map(|c| c.borrow());
+                push_ctrack(l, cb.as_deref(), tpos_fixed.as_ref(), incoming, p.server);
+            }
+            lj::rawset(l, -3);
+            pushf_int(l, "profile_n", dpn as i64);
+            if let Some(n) = &dpname {
+                pushf_str(l, "profile_name", Some(n.as_bytes()));
+            }
+            if let Some(c) = &dpcookie {
+                pushf_str(l, "cookie", Some(c.as_bytes()));
+            }
+            pushf_bool(l, "outgoing", !incoming);
+            pushf_str(l, "ifin", ifin.filter(|s| !s.is_empty()).map(str::as_bytes));
+            pushf_str(
+                l,
+                "ifout",
+                ifout.filter(|s| !s.is_empty()).map(str::as_bytes),
+            );
+            pushf_lint(l, "fwmark", fwmark as i64);
+            pushf_table(l, "target");
+            lj::getfield(l, -1, "target");
+            if sdport != 0 {
+                pushf_int(l, "port", sdport as i64);
+            }
+            if let Some(a) = sdp4 {
+                pushf_raw(l, "ip", Some(a));
+            }
+            if let Some(a) = sdp6 {
+                pushf_raw(l, "ip6", Some(a));
+            }
+            lj::pop(l, 1);
+            pushf_bool(l, "replay", replay_piece_count != 0);
+            if replay_piece_count != 0 {
+                pushf_int(l, "replay_piece", replay_piece as i64 + 1);
+                pushf_int(l, "replay_piece_count", replay_piece_count as i64);
+                pushf_bool(
+                    l,
+                    "replay_piece_last",
+                    replay_piece + 1 >= replay_piece_count,
+                );
+            }
+            pushf_str(l, "l7payload", l7payload_str(l7payload).map(str::as_bytes));
+            pushf_str(l, "l7proto", l7proto_str(l7proto).map(str::as_bytes));
+            pushf_int(l, "reasm_offset", reasm_offset as i64);
+            pushf_raw(l, "reasm_data", rdata);
+            pushf_raw(l, "decrypt_data", ddata);
+            if dis.tcp.is_some() {
+                let t = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
+                let pr = t.map(|t| side(incoming, &t));
+                match pr {
+                    Some((ps, rp)) if ps.mss != 0 && rp.mss != 0 => {
+                        pushf_int(l, "tcp_mss", rp.mss.min(ps.mss) as i64);
+                    }
+                    _ => {
+                        lj::pushstr(l, "tcp_mss");
+                        lj::getglobal(l, "DEFAULT_MSS");
+                        lj::rawset(l, -3);
+                    }
+                }
+            }
+            ref_arg = lj::ref_(l);
             for (i, f) in funcs.iter().enumerate() {
                 let fnn = i as u32 + 1;
                 let instance = crate::lua::api::desync_instance(&f.func, dpn, fnn);
@@ -1224,279 +1344,156 @@ fn desync(
                     c.func = f.func.clone();
                     c.instance = instance.clone();
                 });
-                let range = if incoming { &f.range_in } else { &f.range_out };
-                if unwanted {
-                    unwanted &= !l7_payload_match(l7payload, f.payload_type);
-                }
-                if cutoff_all {
-                    if instance_cutoff_check(l, &ctrack, &instance, dpn, incoming) {
-                        dlog!("* lua '{}' : voluntary cutoff\n", instance);
-                    } else if check_pos_cutoff(pos.as_ref(), range) {
+                if !instance_cutoff_check(l, &ctrack, &instance, dpn, incoming) {
+                    let range = if incoming { &f.range_in } else { &f.range_out };
+                    let t = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
+                    let pos = t.map(|t| side(incoming, &t).0);
+                    let msg = |w: &str| {
                         dlog!(
-                            "* lua '{}' : {} pos {}{} {}{} overflow {} {} is beyond range {}{}{}{}{} (ctrack {})\n",
+                            "* lua '{}' : {} pos {}{} {}{} {} range {}{}{}{}{}\n",
                             instance,
                             s_dir,
                             range.from.mode as char,
                             pos_get(pos.as_ref(), range.from.mode),
                             range.to.mode as char,
                             pos_get(pos.as_ref(), range.to.mode),
-                            pos_overflow(pos.as_ref(), range.from.mode) as u8,
-                            pos_overflow(pos.as_ref(), range.to.mode) as u8,
+                            w,
                             range.from.mode as char,
                             range.from.pos,
                             if range.upper_cutoff { '<' } else { '-' },
                             range.to.mode as char,
-                            range.to.pos,
-                            if ctrack.is_some() { "enabled" } else { "disabled" }
-                        );
-                    } else {
-                        cutoff_all = false;
-                    }
-                }
-            }
-            if cutoff_all {
-                dlog!("all {} desync functions reached cutoff condition\n", s_dir);
-                if let Some(c) = &ctrack {
-                    let mut c = c.borrow_mut();
-                    if incoming {
-                        c.b_lua_in_cutoff = true;
-                    } else {
-                        c.b_lua_out_cutoff = true;
-                    }
-                }
-            } else if unwanted {
-                dlog!(
-                    "all {} desync functions do not want `{}` payload\n",
-                    s_dir,
-                    l7payload_str(l7payload).unwrap_or("(null)")
-                );
-            } else {
-                lj::newtable(l);
-                lj::pushstr(l, "dis");
-                push_dissect(l, pkt, Some(dis));
-                lj::rawset(l, -3);
-                lj::pushstr(l, "track");
-                {
-                    let cb = ctrack.as_ref().map(|c| c.borrow());
-                    push_ctrack(l, cb.as_deref(), tpos_fixed.as_ref(), incoming, p.server);
-                }
-                lj::rawset(l, -3);
-                pushf_int(l, "profile_n", dpn as i64);
-                if let Some(n) = &dpname {
-                    pushf_str(l, "profile_name", Some(n.as_bytes()));
-                }
-                if let Some(c) = &dpcookie {
-                    pushf_str(l, "cookie", Some(c.as_bytes()));
-                }
-                pushf_bool(l, "outgoing", !incoming);
-                pushf_str(l, "ifin", ifin.filter(|s| !s.is_empty()).map(str::as_bytes));
-                pushf_str(
-                    l,
-                    "ifout",
-                    ifout.filter(|s| !s.is_empty()).map(str::as_bytes),
-                );
-                pushf_int(l, "fwmark", fwmark as i64);
-                pushf_table(l, "target");
-                lj::getfield(l, -1, "target");
-                if sdport != 0 {
-                    pushf_int(l, "port", sdport as i64);
-                }
-                if let Some(a) = sdp4 {
-                    pushf_raw(l, "ip", Some(a));
-                }
-                if let Some(a) = sdp6 {
-                    pushf_raw(l, "ip6", Some(a));
-                }
-                lj::pop(l, 1);
-                pushf_bool(l, "replay", replay_piece_count != 0);
-                if replay_piece_count != 0 {
-                    pushf_int(l, "replay_piece", replay_piece as i64 + 1);
-                    pushf_int(l, "replay_piece_count", replay_piece_count as i64);
-                    pushf_bool(
-                        l,
-                        "replay_piece_last",
-                        replay_piece + 1 >= replay_piece_count,
-                    );
-                }
-                pushf_str(l, "l7payload", l7payload_str(l7payload).map(str::as_bytes));
-                pushf_str(l, "l7proto", l7proto_str(l7proto).map(str::as_bytes));
-                pushf_int(l, "reasm_offset", reasm_offset as i64);
-                pushf_raw(l, "reasm_data", rdata);
-                pushf_raw(l, "decrypt_data", ddata);
-                if dis.tcp.is_some() {
-                    let t = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
-                    let pr = t.map(|t| side(incoming, &t));
-                    match pr {
-                        Some((ps, rp)) if ps.mss != 0 && rp.mss != 0 => {
-                            pushf_int(l, "tcp_mss", rp.mss.min(ps.mss) as i64);
-                        }
-                        _ => {
-                            lj::pushstr(l, "tcp_mss");
-                            lj::getglobal(l, "DEFAULT_MSS");
-                            lj::rawset(l, -3);
-                        }
-                    }
-                }
-                ref_arg = lj::ref_(l);
-                for (i, f) in funcs.iter().enumerate() {
-                    let fnn = i as u32 + 1;
-                    let instance = crate::lua::api::desync_instance(&f.func, dpn, fnn);
-                    crate::lua::ctx_with(|c| {
-                        c.func_n = fnn;
-                        c.func = f.func.clone();
-                        c.instance = instance.clone();
-                    });
-                    if !instance_cutoff_check(l, &ctrack, &instance, dpn, incoming) {
-                        let range = if incoming { &f.range_in } else { &f.range_out };
-                        let t = cur_tpos(tpos_fixed.as_ref(), ctrack.as_ref());
-                        let pos = t.map(|t| side(incoming, &t).0);
-                        let msg = |w: &str| {
+                            range.to.pos
+                        )
+                    };
+                    if check_pos_range(pos.as_ref(), range) {
+                        msg("in");
+                        let pls = l7payload_str(l7payload).unwrap_or("(null)");
+                        if l7_payload_match(l7payload, f.payload_type) {
                             dlog!(
-                                "* lua '{}' : {} pos {}{} {}{} {} range {}{}{}{}{}\n",
+                                "* lua '{}' : payload_type '{}' satisfy filter\n",
                                 instance,
-                                s_dir,
-                                range.from.mode as char,
-                                pos_get(pos.as_ref(), range.from.mode),
-                                range.to.mode as char,
-                                pos_get(pos.as_ref(), range.to.mode),
-                                w,
-                                range.from.mode as char,
-                                range.from.pos,
-                                if range.upper_cutoff { '<' } else { '-' },
-                                range.to.mode as char,
-                                range.to.pos
-                            )
-                        };
-                        if check_pos_range(pos.as_ref(), range) {
-                            msg("in");
-                            let pls = l7payload_str(l7payload).unwrap_or("(null)");
-                            if l7_payload_match(l7payload, f.payload_type) {
-                                dlog!(
-                                    "* lua '{}' : payload_type '{}' satisfy filter\n",
-                                    instance,
-                                    pls
-                                );
-                                dlog!("* lua '{}' : desync\n", instance);
-                                lj::getglobal(l, &f.func);
-                                if !lj::isfunction(l, -1) {
-                                    lj::pop(l, 1);
-                                    dlog_err!("desync function '{}' does not exist\n", f.func);
-                                    err = true;
-                                    break;
+                                pls
+                            );
+                            dlog!("* lua '{}' : desync\n", instance);
+                            lj::getglobal(l, &f.func);
+                            if !lj::isfunction(l, -1) {
+                                lj::pop(l, 1);
+                                dlog_err!("desync function '{}' does not exist\n", f.func);
+                                err = true;
+                                break;
+                            }
+                            lj::rawgeti(
+                                l,
+                                lj::LUA_REGISTRYINDEX,
+                                crate::lua::ref_desync_ctx() as i64,
+                            );
+                            lj::rawgeti(l, lj::LUA_REGISTRYINDEX, ref_arg as i64);
+                            if !pushf_args(l, &f.args, -1, true) {
+                                lj::pop(l, 3);
+                                err = true;
+                                break;
+                            }
+                            pushf_str(l, "func", Some(f.func.as_bytes()));
+                            pushf_int(l, "func_n", fnn as i64);
+                            pushf_str(l, "func_instance", Some(instance.as_bytes()));
+                            crate::lua::ctx_with(|c| c.valid = true);
+                            let base = lj::gettop(l) - 3;
+                            let st = lj::pcall(l, 2, lj::LUA_MULTRET);
+                            let _ = base;
+                            crate::lua::ctx_with(|c| c.valid = false);
+                            if st != 0 {
+                                crate::lua::lua_dlog_error();
+                                err = true;
+                                break;
+                            }
+                            // results are on top of the guard base
+                            let nres = lj::gettop(l) - g;
+                            let vf = {
+                                // desync_get_result works on the whole stack top above guard
+                                let _ = nres;
+                                desync_get_result(l)
+                            };
+                            let Some(vf) = vf else {
+                                err = true;
+                                break;
+                            };
+                            verdict = verdict_aggregate(verdict, vf);
+                            if ctrack.is_none() {
+                                let (cc, ci) =
+                                    crate::lua::ctx_with(|c| (c.ctrack.clone(), c.incoming));
+                                if cc.is_some() {
+                                    ctrack = cc;
+                                    incoming = ci;
+                                    tpos_fixed = None;
                                 }
-                                lj::rawgeti(
-                                    l,
-                                    lj::LUA_REGISTRYINDEX,
-                                    crate::lua::ref_desync_ctx() as i64,
-                                );
-                                lj::rawgeti(l, lj::LUA_REGISTRYINDEX, ref_arg as i64);
-                                if !pushf_args(l, &f.args, -1, true) {
-                                    lj::pop(l, 3);
-                                    err = true;
-                                    break;
-                                }
-                                pushf_str(l, "func", Some(f.func.as_bytes()));
-                                pushf_int(l, "func_n", fnn as i64);
-                                pushf_str(l, "func_instance", Some(instance.as_bytes()));
-                                crate::lua::ctx_with(|c| c.valid = true);
-                                let base = lj::gettop(l) - 3;
-                                let st = mlua::ffi::lua_pcall(l, 2, lj::LUA_MULTRET, 0);
-                                let _ = base;
-                                crate::lua::ctx_with(|c| c.valid = false);
-                                if st != 0 {
-                                    crate::lua::lua_dlog_error();
-                                    err = true;
-                                    break;
-                                }
-                                // results are on top of the guard base
-                                let nres = lj::gettop(l) - g;
-                                let vf = {
-                                    // desync_get_result works on the whole stack top above guard
-                                    let _ = nres;
-                                    desync_get_result(l)
-                                };
-                                let Some(vf) = vf else {
-                                    err = true;
-                                    break;
-                                };
-                                verdict = verdict_aggregate(verdict, vf);
-                                if ctrack.is_none() {
-                                    let (cc, ci) =
-                                        crate::lua::ctx_with(|c| (c.ctrack.clone(), c.incoming));
-                                    if cc.is_some() {
-                                        ctrack = cc;
-                                        incoming = ci;
-                                        tpos_fixed = None;
-                                    }
-                                }
-                            } else {
-                                dlog!(
-                                    "* lua '{}' : payload_type '{}' does not satisfy filter\n",
-                                    instance,
-                                    pls
-                                );
                             }
                         } else {
-                            msg("out of");
-                        }
-                    }
-                    if crate::lua::ctx_with(|c| c.cancel) {
-                        break;
-                    }
-                }
-            }
-            if !err && (verdict & VERDICT_MASK) == VERDICT_MODIFY {
-                lj::rawgeti(l, lj::LUA_REGISTRYINDEX, ref_arg as i64);
-                lj::getfield(l, -1, "dis");
-                if lj::typ(l, -1) != lj::LUA_TTABLE {
-                    lj::pop(l, 2);
-                    dlog_err!("dissect data is bad. VERDICT_MODIFY cancel.\n");
-                    err = true;
-                } else {
-                    let o = ReconOpts {
-                        keepsum: false,
-                        badsum: false,
-                        ip6_preserve_next: verdict & VERDICT_PRESERVE_NEXT != 0,
-                        ip6_last_proto: IPPROTO_NONE,
-                    };
-                    let mut buf = vec![0u8; out.max];
-                    let r = reconstruct_dissect(l, -1, &mut buf, &o);
-                    lj::pop(l, 2);
-                    match r {
-                        Some(n) => {
-                            buf.truncate(n);
-                            *out.buf = buf;
                             dlog!(
-                                "reconstructed packet due to VERDICT_MODIFY. size {} => {}\n",
-                                dis.len_pkt,
-                                n
+                                "* lua '{}' : payload_type '{}' does not satisfy filter\n",
+                                instance,
+                                pls
                             );
-                            verdict |= VERDICT_NOCSUM;
                         }
-                        None => {
-                            dlog_err!("failed to reconstruct packet after VERDICT_MODIFY\n");
-                            verdict = VERDICT_PASS;
-                        }
+                    } else {
+                        msg("out of");
+                    }
+                }
+                if crate::lua::ctx_with(|c| c.cancel) {
+                    break;
+                }
+            }
+        }
+        if !err && (verdict & VERDICT_MASK) == VERDICT_MODIFY {
+            lj::rawgeti(l, lj::LUA_REGISTRYINDEX, ref_arg as i64);
+            lj::getfield(l, -1, "dis");
+            if lj::typ(l, -1) != lj::LUA_TTABLE {
+                lj::pop(l, 2);
+                dlog_err!("dissect data is bad. VERDICT_MODIFY cancel.\n");
+                err = true;
+            } else {
+                let o = ReconOpts {
+                    keepsum: false,
+                    badsum: false,
+                    ip6_preserve_next: verdict & VERDICT_PRESERVE_NEXT != 0,
+                    ip6_last_proto: IPPROTO_NONE,
+                };
+                let mut buf = vec![0u8; out.max];
+                let r = reconstruct_dissect(l, -1, &mut buf, &o);
+                lj::pop(l, 2);
+                match r {
+                    Some(n) => {
+                        buf.truncate(n);
+                        *out.buf = buf;
+                        dlog!(
+                            "reconstructed packet due to VERDICT_MODIFY. size {} => {}\n",
+                            dis.len_pkt,
+                            n
+                        );
+                        verdict |= VERDICT_NOCSUM;
+                    }
+                    None => {
+                        dlog_err!("failed to reconstruct packet after VERDICT_MODIFY\n");
+                        verdict = VERDICT_PASS;
                     }
                 }
             }
-        } else {
-            dlog!("no lua functions in this profile\n");
         }
-        if err {
-            dlog_err!("desync ERROR. passing packet unmodified.\n");
-            verdict = VERDICT_PASS;
-        }
-        lj::unref(l, ref_arg);
-        if g != lj::gettop(l) {
-            lj::error(l, "stack guard failure");
-        }
+    } else {
+        dlog!("no lua functions in this profile\n");
+    }
+    if err {
+        dlog_err!("desync ERROR. passing packet unmodified.\n");
+        verdict = VERDICT_PASS;
+    }
+    lj::unref(l, ref_arg);
+    if g != lj::gettop(l) {
+        lj::error(l, "stack guard failure");
     }
     verdict
 }
 
 /// lua_instance_cutoff_check
-unsafe fn instance_cutoff_check(
+fn instance_cutoff_check(
     l: lj::L,
     ct: &Option<CtrackRef>,
     instance: &str,

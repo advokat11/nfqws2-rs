@@ -538,11 +538,13 @@ extern "C" fn onterm(_: c_int) {
 fn catch_signals() {
     let set = |sig: c_int, h: extern "C" fn(c_int)| {
         // SAFETY: installing plain handlers with an empty mask and no flags, as the C code.
+        // SAFETY: sigaction is plain data.
+        let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+        sa.sa_sigaction = h as usize;
+        sa.sa_flags = 0;
+        // SAFETY: valid sigaction; the handlers only touch atomics (and lua_sethook).
         unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
             libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_sigaction = h as usize;
-            sa.sa_flags = 0;
             libc::sigaction(sig, &sa, std::ptr::null_mut());
         }
     };
@@ -633,20 +635,23 @@ fn fuzz_packet_data(count: u32) {
             };
         }
         let modlen = (random() as u64 % (FUZZ_MAX_PACKET_SIZE as u64 + 1)) as usize;
-        // C passes both as call arguments; gcc/x86-64 evaluates them right to left
-        let ifout = if random() & 1 != 0 {
-            Some("ifout")
+        // C draws both inside one call's argument list, whose evaluation order is
+        // unspecified: follow what gcc does for the target (checked against C builds).
+        let draw = |name: &'static str| (random() & 1 != 0).then_some(name);
+        let (ifin, ifout) = if FUZZ_ARGS_RIGHT_TO_LEFT {
+            let ifout = draw("ifout");
+            (draw("ifin"), ifout)
         } else {
-            None
-        };
-        let ifin = if random() & 1 != 0 {
-            Some("ifin")
-        } else {
-            None
+            let ifin = draw("ifin");
+            (ifin, draw("ifout"))
         };
         process_packet_data(0, ifin, ifout, &packet, &mut mbuf, modlen);
     }
 }
+
+/// gcc evaluates these call arguments right to left on x86, left to right on aarch64 and
+/// mips (checked against C builds for those targets).
+const FUZZ_ARGS_RIGHT_TO_LEFT: bool = cfg!(any(target_arch = "x86_64", target_arch = "x86"));
 
 fn do_fuzz() {
     let n = params().fuzz;
@@ -670,8 +675,8 @@ fn no_intercept_loop() {
             if bt_next > bt {
                 let d = bt_next - bt;
                 let ts = libc::timespec {
-                    tv_sec: (d / 1000) as i64,
-                    tv_nsec: (d % 1000 * 1000000) as i64,
+                    tv_sec: (d / 1000) as _,
+                    tv_nsec: (d % 1000 * 1000000) as _,
                 };
                 // SAFETY: valid timespec.
                 unsafe { libc::nanosleep(&ts, std::ptr::null_mut()) };
@@ -709,18 +714,21 @@ fn ifname_of(sock: i32, idx: u32) -> String {
     if idx == 0 {
         return String::new();
     }
-    // SAFETY: ifreq is plain data; ioctl fills the name for the index.
-    unsafe {
-        let mut ifr: libc::ifreq = std::mem::zeroed();
-        ifr.ifr_ifru.ifru_ifindex = idx as i32;
-        if libc::ioctl(sock, libc::SIOCGIFNAME, &mut ifr) < 0 {
-            dlog_perror("ioctl(SIOCGIFNAME)");
-            return String::new();
-        }
-        CStr::from_ptr(ifr.ifr_name.as_ptr())
-            .to_string_lossy()
-            .into_owned()
+    // SAFETY: ifreq is plain data.
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    ifr.ifr_ifru.ifru_ifindex = idx as i32;
+    // SAFETY: valid ifreq; SIOCGIFNAME fills ifr_name with a NUL-terminated name.
+    if unsafe { libc::ioctl(sock, libc::SIOCGIFNAME, &mut ifr) } < 0 {
+        dlog_perror("ioctl(SIOCGIFNAME)");
+        return String::new();
     }
+    let name: Vec<u8> = ifr
+        .ifr_name
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    String::from_utf8_lossy(&name).into_owned()
 }
 
 unsafe extern "C" fn nfq_cb(
@@ -729,19 +737,46 @@ unsafe extern "C" fn nfq_cb(
     nfa: *mut c_void,
     cookie: *mut c_void,
 ) -> c_int {
-    // SAFETY: cookie is the CbData passed to nfq_create_queue; nfa is valid for this call.
-    let cb = &mut *(cookie as *mut CbData);
-    let ph = nfq_get_msg_packet_hdr(nfa);
-    if ph.is_null() {
-        return 0;
-    }
-    let id = u32::from_be((*ph).packet_id);
-    let mut mark = nfq_get_nfmark(nfa);
-    let mut data: *mut u8 = std::ptr::null_mut();
-    let ilen = nfq_get_payload(nfa, &mut data);
-    let outdev = nfq_get_outdev(nfa);
+    // SAFETY: libnetfilter_queue calls this with the cookie given to nfq_create_queue
+    // (our CbData, alive for the whole loop) and a message valid for this call; the
+    // payload pointer covers ilen bytes until the verdict is set.
+    let (cb, id, mark, pkt, indev, outdev) = unsafe {
+        let ph = nfq_get_msg_packet_hdr(nfa);
+        if ph.is_null() {
+            return 0;
+        }
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let ilen = nfq_get_payload(nfa, &mut data);
+        (
+            &mut *(cookie as *mut CbData),
+            u32::from_be((*ph).packet_id),
+            nfq_get_nfmark(nfa),
+            (ilen >= 0 && !data.is_null()).then(|| std::slice::from_raw_parts(data, ilen as usize)),
+            nfq_get_indev(nfa),
+            nfq_get_outdev(nfa),
+        )
+    };
+    let (verdict, len) = packet_verdict(cb, id, mark, pkt, indev, outdev);
+    let out = if len.is_some() {
+        cb.modbuf.as_ptr()
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: qh is the queue this callback belongs to; out covers len bytes of modbuf.
+    unsafe { nfq_set_verdict2(qh, id, verdict, mark, len.unwrap_or(0), out) }
+}
+
+/// Process one queued packet: (NF verdict, Some(len) when cb.modbuf holds a replacement).
+fn packet_verdict(
+    cb: &mut CbData,
+    id: u32,
+    mark: u32,
+    pkt: Option<&[u8]>,
+    indev: u32,
+    outdev: u32,
+) -> (u32, Option<u32>) {
+    let ilen = pkt.map_or(-1, |p| p.len() as i64);
     let ifout = ifname_of(cb.sock, outdev);
-    let indev = nfq_get_indev(nfa);
     let ifin = ifname_of(cb.sock, indev);
     dlog!(
         "\npacket: id={} len={} mark={:08X} ifin={}({}) ifout={}({})\n",
@@ -753,8 +788,7 @@ unsafe extern "C" fn nfq_cb(
         ifout,
         outdev
     );
-    if ilen >= 0 {
-        let pkt = std::slice::from_raw_parts(data, ilen as usize);
+    if let Some(pkt) = pkt {
         cb.modbuf.clear();
         let v = process_packet_data(
             mark,
@@ -764,7 +798,6 @@ unsafe extern "C" fn nfq_cb(
             &mut cb.modbuf,
             RECONSTRUCT_MAX_SIZE,
         );
-        let _ = &mut mark;
         match v & VERDICT_MASK {
             VERDICT_MODIFY => {
                 dlog!(
@@ -773,24 +806,17 @@ unsafe extern "C" fn nfq_cb(
                     ilen,
                     cb.modbuf.len()
                 );
-                return nfq_set_verdict2(
-                    qh,
-                    id,
-                    NF_ACCEPT,
-                    mark,
-                    cb.modbuf.len() as u32,
-                    cb.modbuf.as_ptr(),
-                );
+                return (NF_ACCEPT, Some(cb.modbuf.len() as u32));
             }
             VERDICT_DROP => {
                 dlog!("packet: id={} drop\n", id as i32);
-                return nfq_set_verdict2(qh, id, NF_DROP, mark, 0, std::ptr::null());
+                return (NF_DROP, None);
             }
             _ => {}
         }
     }
     dlog!("packet: id={} pass unmodified\n", id as i32);
-    nfq_set_verdict2(qh, id, NF_ACCEPT, mark, 0, std::ptr::null())
+    (NF_ACCEPT, None)
 }
 
 struct Nfq {
@@ -817,81 +843,90 @@ impl Nfq {
     fn init(&mut self, cb: *mut CbData) -> bool {
         self.deinit();
         let p = params();
-        // SAFETY: libnetfilter_queue API used as in the C original.
-        unsafe {
-            dlog_condup!("opening nfq library handle\n");
-            self.h = nfq_open();
-            if self.h.is_null() {
-                dlog_perror("nfq_open()");
-                self.deinit();
-                return false;
-            }
-            dlog_condup!("unbinding existing nf_queue handler for AF_INET (if any)\n");
-            if nfq_unbind_pf(self.h, libc::AF_INET as u16) < 0 {
-                dlog_perror("nfq_unbind_pf(AF_INET)");
-                self.deinit();
-                return false;
-            }
-            dlog_condup!("binding nfnetlink_queue as nf_queue handler for AF_INET\n");
-            if nfq_bind_pf(self.h, libc::AF_INET as u16) < 0 {
-                dlog_perror("nfq_bind_pf(AF_INET)");
-                self.deinit();
-                return false;
-            }
-            dlog_condup!("unbinding existing nf_queue handler for AF_INET6 (if any)\n");
-            if nfq_unbind_pf(self.h, libc::AF_INET6 as u16) < 0 {
-                dlog_perror("nfq_unbind_pf(AF_INET6)");
-            }
-            dlog_condup!("binding nfnetlink_queue as nf_queue handler for AF_INET6\n");
-            if nfq_bind_pf(self.h, libc::AF_INET6 as u16) < 0 {
-                dlog_perror("nfq_bind_pf(AF_INET6)");
-            }
-            dlog_condup!("binding this socket to queue '{}'\n", p.qnum);
-            self.qh = nfq_create_queue(self.h, p.qnum as u16, nfq_cb, cb as *mut c_void);
-            if self.qh.is_null() {
-                dlog_perror("nfq_create_queue()");
-                self.deinit();
-                return false;
-            }
-            dlog_condup!("setting copy_packet mode\n");
-            if nfq_set_mode(self.qh, NFQNL_COPY_PACKET, 0xffff) < 0 {
-                dlog_perror("can't set packet_copy mode");
-                self.deinit();
-                return false;
-            }
-            if nfq_set_queue_maxlen(self.qh, Q_MAXLEN) < 0 {
-                dlog_perror("can't set queue maxlen");
-                self.deinit();
-                return false;
-            }
-            if nfq_set_queue_flags(self.qh, NFQA_CFG_F_FAIL_OPEN, NFQA_CFG_F_FAIL_OPEN) != 0 {
-                dlog_err!("can't set queue flags. its OK on linux <3.6\n");
-            }
-            let rcvbuf = nfnl_rcvbufsiz(nfq_nfnlh(self.h), Q_RCVBUF as u32) / 2;
-            if rcvbuf == Q_RCVBUF as u32 {
-                dlog!("set receive buffer size to {}\n", rcvbuf);
-            } else {
-                dlog_condup!(
-                    "could not set receive buffer size to {}. real size is {}\n",
-                    Q_RCVBUF,
-                    rcvbuf
-                );
-            }
-            let fd = nfq_fd(self.h);
-            let yes: c_int = 1;
-            if libc::setsockopt(
-                fd,
-                libc::SOL_NETLINK,
-                libc::NETLINK_NO_ENOBUFS,
-                &yes as *const c_int as *const c_void,
-                4,
-            ) == -1
-            {
-                dlog_perror("setsockopt(NETLINK_NO_ENOBUFS)");
-            }
+        // Each call below is libnetfilter_queue used as in the C original, on the handles
+        // this struct owns (checked non-null before use).
+        dlog_condup!("opening nfq library handle\n");
+        // SAFETY: no preconditions.
+        self.h = unsafe { nfq_open() };
+        if self.h.is_null() {
+            dlog_perror("nfq_open()");
+            self.deinit();
+            return false;
+        }
+        let h = self.h;
+        dlog_condup!("unbinding existing nf_queue handler for AF_INET (if any)\n");
+        // SAFETY: h is open.
+        if unsafe { nfq_unbind_pf(h, libc::AF_INET as u16) } < 0 {
+            dlog_perror("nfq_unbind_pf(AF_INET)");
+            self.deinit();
+            return false;
+        }
+        dlog_condup!("binding nfnetlink_queue as nf_queue handler for AF_INET\n");
+        // SAFETY: h is open.
+        if unsafe { nfq_bind_pf(h, libc::AF_INET as u16) } < 0 {
+            dlog_perror("nfq_bind_pf(AF_INET)");
+            self.deinit();
+            return false;
+        }
+        dlog_condup!("unbinding existing nf_queue handler for AF_INET6 (if any)\n");
+        // SAFETY: h is open.
+        if unsafe { nfq_unbind_pf(h, libc::AF_INET6 as u16) } < 0 {
+            dlog_perror("nfq_unbind_pf(AF_INET6)");
+        }
+        dlog_condup!("binding nfnetlink_queue as nf_queue handler for AF_INET6\n");
+        // SAFETY: h is open.
+        if unsafe { nfq_bind_pf(h, libc::AF_INET6 as u16) } < 0 {
+            dlog_perror("nfq_bind_pf(AF_INET6)");
+        }
+        dlog_condup!("binding this socket to queue '{}'\n", p.qnum);
+        // SAFETY: h is open; cb outlives the queue (deinit runs before it is dropped).
+        self.qh = unsafe { nfq_create_queue(h, p.qnum as u16, nfq_cb, cb as *mut c_void) };
+        if self.qh.is_null() {
+            dlog_perror("nfq_create_queue()");
+            self.deinit();
+            return false;
+        }
+        let qh = self.qh;
+        dlog_condup!("setting copy_packet mode\n");
+        // SAFETY: qh is open.
+        if unsafe { nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) } < 0 {
+            dlog_perror("can't set packet_copy mode");
+            self.deinit();
+            return false;
+        }
+        // SAFETY: qh is open.
+        if unsafe { nfq_set_queue_maxlen(qh, Q_MAXLEN) } < 0 {
+            dlog_perror("can't set queue maxlen");
+            self.deinit();
+            return false;
+        }
+        // SAFETY: qh is open.
+        if unsafe { nfq_set_queue_flags(qh, NFQA_CFG_F_FAIL_OPEN, NFQA_CFG_F_FAIL_OPEN) } != 0 {
+            dlog_err!("can't set queue flags. its OK on linux <3.6\n");
+        }
+        // SAFETY: h is open.
+        let rcvbuf = unsafe { nfnl_rcvbufsiz(nfq_nfnlh(h), Q_RCVBUF as u32) } / 2;
+        if rcvbuf == Q_RCVBUF as u32 {
+            dlog!("set receive buffer size to {}\n", rcvbuf);
+        } else {
+            dlog_condup!(
+                "could not set receive buffer size to {}. real size is {}\n",
+                Q_RCVBUF,
+                rcvbuf
+            );
+        }
+        // SAFETY: h is open.
+        let fd = unsafe { nfq_fd(h) };
+        if !set_int_sockopt(fd, libc::SOL_NETLINK, libc::NETLINK_NO_ENOBUFS, 1) {
+            dlog_perror("setsockopt(NETLINK_NO_ENOBUFS)");
         }
         true
     }
+}
+
+fn set_int_sockopt(fd: c_int, level: c_int, opt: c_int, v: c_int) -> bool {
+    // SAFETY: v is a live c_int for the duration of the call.
+    unsafe { libc::setsockopt(fd, level, opt, &v as *const c_int as *const c_void, 4) != -1 }
 }
 
 fn nfq_main() -> i32 {
@@ -995,8 +1030,8 @@ fn nfq_main() -> i32 {
                     let bt = boottime_ms();
                     let dbt = bt_next.saturating_sub(bt);
                     let mut tv = libc::timeval {
-                        tv_sec: (dbt / 1000) as i64,
-                        tv_usec: (dbt % 1000 * 1000) as i64,
+                        tv_sec: (dbt / 1000) as _,
+                        tv_usec: (dbt % 1000 * 1000) as _,
                     };
                     // SAFETY: fd_set manipulation and select on a valid fd.
                     let r = unsafe {
