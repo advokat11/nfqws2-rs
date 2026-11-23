@@ -16,7 +16,7 @@ jobs:
           platform: x86_64
           site: http://ctm.crouchingtigerhiddenfruitbat.org/pub/cygwin/circa/64bit/2024/01/30/231215
           check-sig: 'false'
-          packages: gcc-core make zlib-devel wget patch pkg-config
+          packages: gcc-core make zlib-devel wget patch pkg-config unzip
       - name: LuaJIT (upstream recipe)
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
         run: >-
@@ -37,7 +37,7 @@ jobs:
           ls -la z/nfq2/winws2.exe && cp /usr/bin/cygwin1.dll z/nfq2/ &&
           wget -qO wd.zip https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip &&
           unzip -qj wd.zip "*/x64/WinDivert.dll" "*/x64/WinDivert64.sys" -d z/nfq2 &&
-          cd z/nfq2 &&
+          cd z/nfq2 && ls -la && cygcheck ./winws2.exe | tail -15;
           { ./winws2.exe --version; echo "rc=$?"; } &&
           { ./winws2.exe --wf-tcp-out=443 --wf-udp-out=443 --wf-save=f.txt; echo "rc=$?"; cat f.txt; echo; } &&
           { ./winws2.exe --dry-run --wf-tcp-out=443 --debug=1 2>&1 | tail -4; } &&
@@ -51,6 +51,12 @@ jobs:
           cd hello
           Add-Content src/main.rs 'unsafe extern "C" { fn getpid() -> i32; } #[allow(dead_code)] fn pid() -> i32 { unsafe { getpid() } }'
           $env:RUSTC_BOOTSTRAP = "1"
+          # Cygwin 3.4 (the upstream snapshot, last with Windows 7 support) lacks this; std only uses it
+          # for Command::current_dir with posix_spawn, which the program never does
+          Set-Content stub.c '#include <errno.h>
+          int posix_spawn_file_actions_addchdir_np(void *a, const char *p) { (void)a; (void)p; return ENOSYS; }'
+          C:\cygwinin\gcc.exe -c -O2 -o stub.o stub.c
+          $env:CARGO_TARGET_X86_64_PC_CYGWIN_RUSTFLAGS = "-C link-arg=$((Get-Location).Path)\stub.o"
           $env:CARGO_TARGET_X86_64_PC_CYGWIN_LINKER = "C:\cygwin\bin\gcc.exe"
           cargo +1.100.0 build --release --target x86_64-pc-cygwin '-Zbuild-std=std,panic_abort' 2>&1 | Select-Object -Last 25
           Get-ChildItem target\x86_64-pc-cygwin\release\*.exe
