@@ -39,7 +39,7 @@ jobs:
           unzip -qj wd.zip "*/x64/WinDivert.dll" "*/x64/WinDivert64.sys" -d z/nfq2 &&
           true
       - name: Run C winws2
-        shell: C:\cygwin\bin\bash.exe '{0}'
+        shell: C:\cygwin\bin\bash.exe -o igncr '{0}'
         run: |
           cd z/nfq2
           ./winws2.exe --version; echo "version rc=$?"
